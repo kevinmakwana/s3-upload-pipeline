@@ -1,0 +1,11 @@
+{
+  "name": "@s3up/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-safe upload planning, validation, reconciliation and the resumable upload engine.",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}
