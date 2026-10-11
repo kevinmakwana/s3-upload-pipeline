@@ -1,0 +1,38 @@
+{
+  "name": "s3-upload-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser-to-S3 multipart uploads for very large files, with async processing on SQS + Lambda.",
+  "license": "MIT",
+  "author": "Kevin Makwana",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "functions",
+    "infra"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "jest --selectProjects unit",
+    "test:integration": "jest --selectProjects integration --runInBand",
+    "build": "npm run build --workspaces --if-present",
+    "synth": "npm run synth -w infra",
+    "localstack:up": "docker compose up -d --wait localstack",
+    "localstack:down": "docker compose down -v",
+    "localstack:deploy": "npm run deploy:local -w infra",
+    "dev": "npm run dev --workspace=apps/api --workspace=apps/web --if-present",
+    "gen:file": "tsx scripts/gen-file.ts"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "jest": "^30.5.2",
+    "ts-jest": "^29.4.14",
+    "tsx": "^4.23.15",
+    "typescript": "~5.9.3"
+  }
+}

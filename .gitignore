@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+cdk.out/
+cdk-outputs*.json
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.vite/
+tmp/
+.tmp/
+*.tsbuildinfo
