@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "experimentalDecorators": true, "lib": ["ES2023", "DOM"], "types": ["node", "jest"] },
+  "include": ["scripts", "tests"]
+}

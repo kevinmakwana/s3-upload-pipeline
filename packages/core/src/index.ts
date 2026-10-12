@@ -7,3 +7,4 @@ export * from './types';
 export * from './errors';
 export * from './checksum';
 export * from './engine';
+export * from './http-api';

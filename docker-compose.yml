@@ -1,0 +1,21 @@
+name: s3-upload-pipeline
+
+services:
+  localstack:
+    # Pinned: LocalStack images from 2026.03 onward require an account auth token.
+    # 4.14.0 is the last community release that runs without one.
+    image: localstack/localstack:4.14.0
+    ports:
+      - "127.0.0.1:4566:4566"
+    environment:
+      SERVICES: s3,sqs,lambda,dynamodb,cloudformation,sns,cloudwatch,iam,sts,ssm,events,logs,kms
+      LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT: "120"
+      DEBUG: "0"
+    volumes:
+      # Lambda functions run as sibling containers, so LocalStack needs the Docker socket.
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -q '\"s3\": \"\\(available\\|running\\)\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
