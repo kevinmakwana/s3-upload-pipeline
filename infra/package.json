@@ -1,0 +1,22 @@
+{
+  "name": "@s3up/infra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AWS CDK app: bucket, queues, worker Lambda, table, alarms, IAM and (optionally) the API on Fargate.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "synth": "cdk synth --quiet",
+    "synth:api": "cdk synth --quiet -c deployApi=true",
+    "deploy:local": "bash scripts/deploy-local.sh",
+    "deploy": "cdk deploy --require-approval never -c deployApi=true",
+    "destroy": "cdk destroy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.273.0",
+    "constructs": "^10.8.1"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.1145.0",
+    "aws-cdk-local": "^3.0.4"
+  }
+}

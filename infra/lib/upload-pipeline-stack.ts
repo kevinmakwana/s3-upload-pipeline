@@ -1,0 +1,268 @@
+import * as path from 'node:path';
+import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as acm from 'aws-cdk-lib/aws-certificatemanager';
+import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import type { Construct } from 'constructs';
+
+export interface UploadPipelineProps extends StackProps {
+  /** Target LocalStack: disposable resources, no ECS/ALB. */
+  local: boolean;
+  /** Also deploy the API on Fargate behind an ALB. */
+  deployApi: boolean;
+  /** Origins allowed to PUT parts / GET thumbnails from the browser, and to call the API. */
+  allowedOrigins: string[];
+  /** ACM certificate for the ALB's HTTPS listener (recommended; the browser UI is usually HTTPS). */
+  certificateArn?: string;
+  /** Subscribe this address to the alarm topic. */
+  alarmEmail?: string;
+}
+
+/** Longest the worker may run. Checksumming a 15 GB object streams at roughly 100-300 MB/s. */
+const WORKER_TIMEOUT = Duration.minutes(15);
+const MAX_RECEIVE_COUNT = 3;
+const repoRoot = path.resolve(__dirname, '..', '..');
+
+export class UploadPipelineStack extends Stack {
+  constructor(scope: Construct, id: string, props: UploadPipelineProps) {
+    super(scope, id, props);
+    const { local } = props;
+    const removal = local ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN;
+
+    // ---------------------------------------------------------------- storage
+    const bucket = new s3.Bucket(this, 'UploadBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      objectOwnership: s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+      // Versioning makes (key, versionId) a stable idempotency key for the worker.
+      versioned: true,
+      removalPolicy: removal,
+      cors: [
+        {
+          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
+          allowedOrigins: props.allowedOrigins,
+          allowedHeaders: ['*'],
+          exposedHeaders: ['ETag', 'x-amz-checksum-sha256'],
+          maxAge: 3000,
+        },
+      ],
+      lifecycleRules: [
+        {
+          id: 'abort-incomplete-multipart-uploads',
+          // Parts of abandoned uploads are billed until aborted. Two days leaves room to resume.
+          abortIncompleteMultipartUploadAfter: Duration.days(2),
+        },
+        { id: 'expire-noncurrent-versions', noncurrentVersionExpiration: Duration.days(30) },
+        { id: 'expire-delete-markers', expiredObjectDeleteMarker: true },
+      ],
+    });
+
+    const table = new dynamodb.Table(this, 'FilesTable', {
+      partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: removal,
+      ...(local ? {} : { pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true } }),
+    });
+    table.addGlobalSecondaryIndex({
+      indexName: 'byUser',
+      partitionKey: { name: 'gsiUser', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'gsiCreated', type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    // ------------------------------------------------------------- processing
+    const dlq = new sqs.Queue(this, 'ProcessingDlq', {
+      retentionPeriod: Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+    });
+    const queue = new sqs.Queue(this, 'ProcessingQueue', {
+      // Must exceed the consumer's timeout (AWS recommends 6x) or messages reappear mid-run.
+      visibilityTimeout: Duration.seconds(WORKER_TIMEOUT.toSeconds() * 6),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+      deadLetterQueue: { queue: dlq, maxReceiveCount: MAX_RECEIVE_COUNT },
+    });
+
+    // Only objects under uploads/ trigger work, so writing thumbnails can't loop.
+    bucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.SqsDestination(queue), { prefix: 'uploads/' });
+
+    const worker = new NodejsFunction(this, 'ProcessUploadFn', {
+      entry: path.join(repoRoot, 'functions', 'src', 'process-upload', 'handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 1536,
+      timeout: WORKER_TIMEOUT,
+      logGroup: new logs.LogGroup(this, 'WorkerLogs', { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
+      environment: {
+        TABLE_NAME: table.tableName,
+        BUCKET_NAME: bucket.bucketName,
+        MAX_RECEIVE_COUNT: String(MAX_RECEIVE_COUNT),
+        LEASE_MS: String(WORKER_TIMEOUT.toMilliseconds() + 60_000),
+        // Lambda containers inside LocalStack reach S3 as plain "localstack": path-style needed.
+        ...(local ? { S3_FORCE_PATH_STYLE: 'true' } : {}),
+      },
+      bundling: {
+        minify: true,
+        sourceMap: true,
+        target: 'node22',
+        // The Node 22 runtime ships AWS SDK v3; LocalStack's does too.
+        externalModules: ['@aws-sdk/*'],
+      },
+    });
+    worker.addEventSource(
+      new SqsEventSource(queue, { batchSize: 1, reportBatchItemFailures: true, maxConcurrency: 5 }),
+    );
+
+    // Least privilege for the worker: read uploads, write thumbnails, touch two DynamoDB actions.
+    worker.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'ReadUploadedObjects',
+        actions: ['s3:GetObject', 's3:GetObjectVersion'],
+        resources: [bucket.arnForObjects('uploads/*')],
+      }),
+    );
+    worker.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'WriteThumbnails',
+        actions: ['s3:PutObject'],
+        resources: [bucket.arnForObjects('thumbnails/*')],
+      }),
+    );
+    worker.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'FileRecordsAndLedger',
+        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
+        resources: [table.tableArn],
+      }),
+    );
+
+    // ----------------------------------------------------------------- alarms
+    const alarmTopic = new sns.Topic(this, 'AlarmTopic', { enforceSSL: true });
+    if (props.alarmEmail) alarmTopic.addSubscription(new subs.EmailSubscription(props.alarmEmail));
+    const alarmAction = new cw_actions.SnsAction(alarmTopic);
+
+    const dlqAlarm = new cloudwatch.Alarm(this, 'DlqNotEmptyAlarm', {
+      alarmDescription: 'A file failed processing repeatedly and landed in the dead-letter queue.',
+      metric: dlq.metricApproximateNumberOfMessagesVisible({ period: Duration.minutes(1), statistic: 'Maximum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    dlqAlarm.addAlarmAction(alarmAction);
+
+    const backlogAlarm = new cloudwatch.Alarm(this, 'QueueBacklogAlarm', {
+      alarmDescription: 'Uploads have been waiting for processing for over an hour.',
+      metric: queue.metricApproximateAgeOfOldestMessage({ period: Duration.minutes(5), statistic: 'Maximum' }),
+      threshold: 3600,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    backlogAlarm.addAlarmAction(alarmAction);
+
+    const errorsAlarm = new cloudwatch.Alarm(this, 'WorkerErrorsAlarm', {
+      alarmDescription: 'The processing Lambda is erroring (throttles or crashes, not per-file failures).',
+      metric: worker.metricErrors({ period: Duration.minutes(5) }),
+      threshold: 3,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    errorsAlarm.addAlarmAction(alarmAction);
+
+    // -------------------------------------------------------------------- API
+    // What the API's identity needs and nothing more. Attach it to any role you run the API under.
+    const apiPolicy = new iam.ManagedPolicy(this, 'ApiPolicy', {
+      description: 'Least-privilege access for the upload API (presign, list parts, complete, status).',
+      statements: [
+        new iam.PolicyStatement({
+          sid: 'MultipartUploads',
+          // s3:PutObject also authorises UploadPart; ListMultipartUploadParts backs ListParts.
+          actions: ['s3:PutObject', 's3:AbortMultipartUpload', 's3:ListMultipartUploadParts'],
+          resources: [bucket.arnForObjects('uploads/*')],
+        }),
+        new iam.PolicyStatement({
+          sid: 'VerifyAndDiscardObjects',
+          actions: ['s3:GetObject', 's3:DeleteObject', 's3:DeleteObjectVersion'],
+          resources: [bucket.arnForObjects('uploads/*')],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ReadThumbnails',
+          actions: ['s3:GetObject'],
+          resources: [bucket.arnForObjects('thumbnails/*')],
+        }),
+        new iam.PolicyStatement({
+          sid: 'FileRecords',
+          actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Query'],
+          resources: [table.tableArn, `${table.tableArn}/index/byUser`],
+        }),
+      ],
+    });
+
+    let apiUrl: string | undefined;
+    if (props.deployApi) {
+      // No NAT gateway (≈$32/month): tasks sit in public subnets and only the ALB accepts traffic.
+      const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 0 });
+      const certificate = props.certificateArn
+        ? acm.Certificate.fromCertificateArn(this, 'ApiCertificate', props.certificateArn)
+        : undefined;
+      const service = new ecsPatterns.ApplicationLoadBalancedFargateService(this, 'Api', {
+        vpc,
+        cpu: 256,
+        memoryLimitMiB: 512,
+        desiredCount: 1,
+        minHealthyPercent: 100,
+        assignPublicIp: true,
+        circuitBreaker: { rollback: true },
+        certificate,
+        redirectHTTP: !!certificate,
+        // Browsers hold SSE connections open; keep the ALB from cutting them off between heartbeats.
+        idleTimeout: Duration.seconds(120),
+        taskImageOptions: {
+          containerPort: 3001,
+          image: ecs.ContainerImage.fromAsset(repoRoot, { file: 'apps/api/Dockerfile' }),
+          environment: {
+            BUCKET_NAME: bucket.bucketName,
+            TABLE_NAME: table.tableName,
+            CORS_ORIGINS: props.allowedOrigins.join(','),
+            PORT: '3001',
+          },
+          logDriver: ecs.LogDrivers.awsLogs({
+            streamPrefix: 'api',
+            logGroup: new logs.LogGroup(this, 'ApiLogs', { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
+          }),
+        },
+      });
+      service.targetGroup.configureHealthCheck({ path: '/health' });
+      service.taskDefinition.taskRole.addManagedPolicy(apiPolicy);
+      apiUrl = `${certificate ? 'https' : 'http'}://${service.loadBalancer.loadBalancerDnsName}`;
+      new CfnOutput(this, 'ApiUrl', { value: apiUrl });
+    }
+
+    // ---------------------------------------------------------------- outputs
+    new CfnOutput(this, 'BucketName', { value: bucket.bucketName });
+    new CfnOutput(this, 'TableName', { value: table.tableName });
+    new CfnOutput(this, 'QueueUrl', { value: queue.queueUrl });
+    new CfnOutput(this, 'DlqUrl', { value: dlq.queueUrl });
+    new CfnOutput(this, 'WorkerFunctionName', { value: worker.functionName });
+    new CfnOutput(this, 'ApiPolicyArn', { value: apiPolicy.managedPolicyArn });
+    new CfnOutput(this, 'AlarmTopicArn', { value: alarmTopic.topicArn });
+  }
+}
