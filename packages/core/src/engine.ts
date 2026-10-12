@@ -212,6 +212,14 @@ export class Upload {
     };
   }
 
+  /** Per-part state for visualisation: 0 = waiting, 1 = in flight, 2 = uploaded. Index = partNumber - 1. */
+  partStates(): Uint8Array {
+    const states = new Uint8Array(this.plan?.partCount ?? 0);
+    for (const n of Object.keys(this.parts)) states[Number(n) - 1] = 2;
+    for (const n of this.loaded.keys()) if (states[n - 1] !== 2) states[n - 1] = 1;
+    return states;
+  }
+
   subscribe(fn: (p: UploadProgress) => void): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
@@ -249,6 +257,7 @@ export class Upload {
   }
 
   private emit(): void {
+    if (this.listeners.size === 0) return;
     const p = this.progress;
     for (const fn of this.listeners) fn(p);
   }

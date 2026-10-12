@@ -1,0 +1,27 @@
+{
+  "name": "@s3up/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "React UI: drop a huge file, watch parts upload in parallel, resume after a reload, follow processing.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fontsource-variable/schibsted-grotesk": "^5.3.0",
+    "@s3up/core": "*",
+    "idb": "^8.0.4",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "fake-indexeddb": "^6.2.5",
+    "vite": "^8.3.4"
+  }
+}

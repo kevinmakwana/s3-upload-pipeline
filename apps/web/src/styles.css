@@ -1,0 +1,467 @@
+/* Chalk-and-ink palette. The part map is the one loud element; everything else stays quiet. */
+:root {
+  --bg: #e8ecef;
+  --surface: #f7f9fa;
+  --surface-sunk: #dde3e8;
+  --ink: #13222b;
+  --ink-soft: #4a5b66;
+  --line: #c6cfd6;
+  --part: #2748d6;
+  --part-wait: #cdd5dc;
+  --processing: #b87800;
+  --ready: #17824f;
+  --failed: #b8322b;
+  --focus: #2748d6;
+  --radius: 10px;
+  --font: 'Schibsted Grotesk Variable', 'Schibsted Grotesk', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e171c;
+    --surface: #16222a;
+    --surface-sunk: #0a1114;
+    --ink: #e5edf1;
+    --ink-soft: #9db0bb;
+    --line: #2a3a44;
+    --part: #6f8cff;
+    --part-wait: #26353f;
+    --processing: #e0a22a;
+    --ready: #3cc183;
+    --failed: #ff7a70;
+    --focus: #8aa1ff;
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+}
+
+h1,
+h3,
+p,
+ol,
+ul {
+  margin: 0;
+  padding: 0;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 48px 16px 64px;
+}
+
+/* ---------------------------------------------------------------- masthead */
+.masthead {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+
+.masthead h1 {
+  font-size: clamp(1.9rem, 4vw, 2.6rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+
+.lede {
+  margin-top: 10px;
+  max-width: 46ch;
+  color: var(--ink-soft);
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.stepper-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--ink-soft);
+}
+
+.stepper-value b {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.conn-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--processing);
+}
+
+.conn-live .conn-dot {
+  background: var(--ready);
+}
+
+/* ----------------------------------------------------------------- buttons */
+.btn {
+  appearance: none;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  transition: background-color 0.12s, border-color 0.12s;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--ink-soft);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--part);
+  border-color: var(--part);
+  color: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+  .btn-primary {
+    color: #0a1114;
+  }
+}
+
+.btn-primary:hover:not(:disabled) {
+  border-color: var(--ink);
+  filter: brightness(1.06);
+}
+
+.btn-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-soft);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  color: var(--failed);
+  border-color: transparent;
+}
+
+.btn-icon {
+  width: 30px;
+  padding: 3px 0;
+  line-height: 1.2;
+}
+
+/* ---------------------------------------------------------------- dropzone */
+.dropzone {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 26px 24px 30px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: border-color 0.12s, background-color 0.12s;
+}
+
+/* A row of faint part-sized segments along the bottom edge hints at what happens next. */
+.dropzone::after {
+  content: '';
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 12px;
+  height: 6px;
+  border-radius: 2px;
+  background: repeating-linear-gradient(90deg, var(--part-wait) 0 22px, transparent 22px 26px);
+  opacity: 0.8;
+}
+
+.dropzone.is-over {
+  border-color: var(--part);
+  background: color-mix(in srgb, var(--part) 8%, var(--surface));
+}
+
+.dropzone-title {
+  font-size: 1.15rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.dropzone-hint {
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  margin-top: 2px;
+}
+
+/* -------------------------------------------------------------------- rows */
+.rows {
+  margin-top: 28px;
+  display: grid;
+  gap: 14px;
+}
+
+.empty {
+  margin-top: 32px;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+.row {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px 14px;
+}
+
+.row-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.thumb {
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface-sunk);
+  flex-shrink: 0;
+}
+
+.row-title {
+  min-width: 0;
+  flex: 1;
+}
+
+.row-title h3 {
+  font-size: 1.02rem;
+  font-weight: 650;
+  letter-spacing: -0.005em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-size {
+  color: var(--ink-soft);
+  font-size: 0.88rem;
+}
+
+.row-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 10px;
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  min-height: 1.3em;
+}
+
+.row-stats .stat-main {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.row-error {
+  margin-top: 8px;
+  font-size: 0.9rem;
+  color: var(--failed);
+}
+
+.row-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* ----------------------------------------------------------------- stepper */
+.stepper {
+  display: flex;
+  gap: 4px 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+}
+
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  opacity: 0.55;
+}
+
+.step.is-done .step-dot {
+  background: var(--ready);
+  border-color: var(--ready);
+  opacity: 1;
+}
+
+.step.is-current {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.step.is-current .step-dot {
+  background: var(--part);
+  border-color: var(--part);
+  opacity: 1;
+}
+
+.step.is-failed {
+  color: var(--failed);
+  font-weight: 650;
+}
+
+.step.is-failed .step-dot {
+  background: var(--failed);
+  border-color: var(--failed);
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------- part map */
+.partmap {
+  --tone: var(--part);
+  display: grid;
+  gap: 2px;
+  height: 16px;
+}
+
+.partmap.tone-processing {
+  --tone: var(--processing);
+}
+.partmap.tone-ready {
+  --tone: var(--ready);
+}
+.partmap.tone-failed {
+  --tone: var(--failed);
+}
+.partmap.tone-paused {
+  --tone: var(--ink-soft);
+}
+
+.cell {
+  display: block;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--tone) var(--fill), var(--part-wait) var(--fill));
+  transition: background 0.2s;
+}
+
+.cell.is-active {
+  animation: part-pulse 1s ease-in-out infinite;
+}
+
+@keyframes part-pulse {
+  50% {
+    background: linear-gradient(90deg, var(--tone) var(--fill), color-mix(in srgb, var(--tone) 45%, var(--part-wait)) var(--fill));
+  }
+}
+
+/* ------------------------------------------------------------------- footer */
+.foot {
+  margin-top: 40px;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+}
+
+.foot b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------------ narrow */
+@media (max-width: 640px) {
+  .page {
+    padding-top: 28px;
+  }
+  .masthead {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .controls {
+    align-items: flex-start;
+  }
+  .dropzone {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .row-head {
+    flex-wrap: wrap;
+  }
+  .stepper {
+    justify-content: flex-start;
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cell.is-active {
+    animation: none;
+    background: linear-gradient(90deg, var(--tone) var(--fill), color-mix(in srgb, var(--tone) 35%, var(--part-wait)) var(--fill));
+  }
+  * {
+    transition: none !important;
+  }
+}

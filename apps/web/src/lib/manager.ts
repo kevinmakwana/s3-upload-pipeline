@@ -1,0 +1,341 @@
+import {
+  HttpUploadApi,
+  Upload,
+  type FileDto,
+  type PartSource,
+  type PartTransport,
+  type PersistedUpload,
+  type ResumeStore,
+  type UploadApi,
+  type UploadOptions,
+  type UploadPhase,
+  type UploadProgress,
+} from '@s3up/core';
+import type { ConnectionState } from './sse';
+
+/** A local upload session: running, paused, failed, or interrupted by a reload. */
+export interface LocalUpload {
+  localId: string;
+  fileId?: string;
+  fileName: string;
+  contentType: string;
+  size: number;
+  lastModified: number;
+  phase: UploadPhase | 'interrupted';
+  bytesUploaded: number;
+  partsDone: number;
+  partCount: number;
+  activeParts: number;
+  bytesPerSecond: number;
+  etaSeconds?: number;
+  /** 0 waiting, 1 in flight, 2 uploaded. */
+  partStates: Uint8Array;
+  error?: string;
+  restarted?: boolean;
+  /** Interrupted upload whose file we can reopen with one click (no file picker). */
+  canReopenFile: boolean;
+}
+
+export interface ManagerSnapshot {
+  local: LocalUpload[];
+  files: FileDto[];
+  connection: ConnectionState;
+  concurrency: number;
+}
+
+export interface ManagerDeps {
+  api: UploadApi & { listFiles?(): Promise<FileDto[]> };
+  transport: PartTransport;
+  store: ResumeStore & {
+    list(): Promise<PersistedUpload[]>;
+    putHandle?(fileId: string, handle: FileSystemFileHandle): Promise<void>;
+    getHandle?(fileId: string): Promise<FileSystemFileHandle | undefined>;
+  };
+  makeSource(file: File): PartSource;
+  uploadOptions?: Partial<UploadOptions>;
+  concurrency?: number;
+  now?: () => number;
+  storage?: Pick<Storage, 'getItem' | 'setItem'>;
+}
+
+interface Entry {
+  view: LocalUpload;
+  upload?: Upload;
+  file?: File;
+  handle?: FileSystemFileHandle;
+  persisted?: PersistedUpload;
+  samples: Array<{ t: number; bytes: number }>;
+}
+
+const SPEED_WINDOW_MS = 6000;
+export const CONCURRENCY_KEY = 's3up:concurrency';
+
+/**
+ * Owns every upload in this tab. The UI only reads snapshots and calls actions, which keeps the
+ * interesting behaviour (resume after reload, one-click reopen, speed/ETA) testable without React.
+ */
+export class UploadManager {
+  private readonly entries = new Map<string, Entry>();
+  private files: FileDto[] = [];
+  private connection: ConnectionState = 'connecting';
+  private concurrency: number;
+  private snapshot: ManagerSnapshot;
+  private readonly listeners = new Set<() => void>();
+  private notifyTimer?: ReturnType<typeof setTimeout>;
+  private restoring?: Promise<void>;
+  private readonly now: () => number;
+
+  constructor(private readonly deps: ManagerDeps) {
+    this.now = deps.now ?? Date.now;
+    this.concurrency = this.readConcurrency();
+    this.snapshot = this.build();
+  }
+
+  // ------------------------------------------------------------------ store API
+  subscribe = (fn: () => void): (() => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+  getSnapshot = (): ManagerSnapshot => this.snapshot;
+
+  setFiles(files: FileDto[]): void {
+    this.files = files;
+    this.publish(true);
+  }
+
+  setConnection(state: ConnectionState): void {
+    if (state === this.connection) return;
+    this.connection = state;
+    this.publish(true);
+  }
+
+  setConcurrency(n: number): void {
+    this.concurrency = Math.min(16, Math.max(1, Math.round(n)));
+    try {
+      this.deps.storage?.setItem(CONCURRENCY_KEY, String(this.concurrency));
+    } catch {
+      /* storage unavailable: setting just won't persist */
+    }
+    this.publish(true);
+  }
+
+  // -------------------------------------------------------------------- actions
+  /** Reload recovery: surface sessions saved in IndexedDB, and auto-resume where permission allows. */
+  restore(): Promise<void> {
+    // Idempotent: React StrictMode (and hot reloads) may call this more than once.
+    this.restoring ??= this.doRestore();
+    return this.restoring;
+  }
+
+  private async doRestore(): Promise<void> {
+    const saved = await this.deps.store.list();
+    for (const persisted of saved) {
+      if (this.hasFile(persisted.fileId)) continue;
+      const handle = await this.deps.store.getHandle?.(persisted.fileId);
+      const localId = crypto.randomUUID();
+      const entry: Entry = { view: this.viewFromPersisted(localId, persisted, !!handle), samples: [], persisted, handle };
+      this.entries.set(localId, entry);
+    }
+    this.publish(true);
+    // Chromium remembers read access for files it has seen: continue without any click.
+    for (const [localId, entry] of this.entries) {
+      if (entry.handle && (await entry.handle.queryPermission?.({ mode: 'read' })) === 'granted') {
+        await this.resume(localId).catch(() => undefined);
+      }
+    }
+  }
+
+  /** Start uploading a file the user just chose. */
+  async add(file: File, handle?: FileSystemFileHandle): Promise<string> {
+    const localId = crypto.randomUUID();
+    const entry: Entry = {
+      view: {
+        localId, fileName: file.name, contentType: contentTypeOf(file), size: file.size, lastModified: file.lastModified,
+        phase: 'idle', bytesUploaded: 0, partsDone: 0, partCount: 0, activeParts: 0, bytesPerSecond: 0,
+        partStates: new Uint8Array(0), canReopenFile: !!handle,
+      },
+      file, handle, samples: [],
+    };
+    this.entries.set(localId, entry);
+    this.begin(localId, entry);
+    return localId;
+  }
+
+  /**
+   * Continue a paused / failed / interrupted upload. For an interrupted one, the file comes from
+   * the stored handle (one click) or from `picked` (the user selects it again).
+   */
+  async resume(localId: string, picked?: File): Promise<void> {
+    const entry = this.entries.get(localId);
+    if (!entry) return;
+    if (entry.upload) {
+      void entry.upload.start().catch(() => undefined);
+      return;
+    }
+    const persisted = entry.persisted;
+    if (!persisted) return;
+    let file = picked;
+    if (!file && entry.handle) {
+      const ok = (await entry.handle.queryPermission?.({ mode: 'read' })) === 'granted' || (await entry.handle.requestPermission?.({ mode: 'read' })) === 'granted';
+      if (!ok) return this.fail(entry, 'Permission to read the file was not granted. Choose the file again.');
+      file = await entry.handle.getFile();
+    }
+    if (!file) return;
+    if (file.size !== persisted.fileSize || file.name !== persisted.fileName) {
+      return this.fail(entry, `That is not the same file. Choose "${persisted.fileName}" (${persisted.fileSize} bytes).`);
+    }
+    entry.file = file;
+    entry.view.error = undefined;
+    this.begin(localId, entry, persisted);
+  }
+
+  pause(localId: string): void {
+    this.entries.get(localId)?.upload?.pause();
+  }
+
+  async cancel(localId: string): Promise<void> {
+    const entry = this.entries.get(localId);
+    if (!entry) return;
+    if (entry.upload) await entry.upload.cancel();
+    else if (entry.persisted) {
+      await this.deps.api.abort(entry.persisted.fileId).catch(() => undefined);
+      await this.deps.store.delete(entry.persisted.fileId);
+    }
+    this.entries.delete(localId);
+    this.publish(true);
+    await this.refreshFiles();
+  }
+
+  async refreshFiles(): Promise<void> {
+    try {
+      const files = await this.deps.api.listFiles?.();
+      if (files) this.setFiles(files);
+    } catch {
+      /* the live stream will catch up */
+    }
+  }
+
+  // ------------------------------------------------------------------ internals
+  private begin(localId: string, entry: Entry, persisted?: PersistedUpload): void {
+    const file = entry.file!;
+    const upload = new Upload(
+      { api: this.deps.api, transport: this.deps.transport, store: this.deps.store },
+      this.deps.makeSource(file),
+      { fileName: file.name, contentType: entry.view.contentType, lastModified: file.lastModified },
+      { concurrency: this.concurrency, ...this.deps.uploadOptions },
+      persisted,
+    );
+    entry.upload = upload;
+    entry.samples = [];
+    upload.subscribe((p) => {
+      this.onProgress(entry, p);
+      if (p.fileId && entry.handle && !entry.view.fileId) void this.deps.store.putHandle?.(p.fileId, entry.handle);
+      this.publish();
+    });
+    this.onProgress(entry, upload.progress);
+    this.publish(true);
+
+    upload.start().then(
+      (outcome) => {
+        if (outcome.type === 'done' || outcome.type === 'cancelled') {
+          this.entries.delete(localId);
+          this.publish(true);
+          void this.refreshFiles();
+        }
+      },
+      (err: unknown) => this.fail(entry, err instanceof Error ? err.message : String(err)),
+    );
+  }
+
+  private onProgress(entry: Entry, p: UploadProgress): void {
+    const v = entry.view;
+    const t = this.now();
+    v.fileId = p.fileId ?? v.fileId;
+    v.phase = p.phase;
+    v.bytesUploaded = p.bytesUploaded;
+    v.partsDone = p.partsDone;
+    v.partCount = p.partCount;
+    v.activeParts = p.activeParts;
+    v.restarted = p.restarted;
+    v.error = p.error ?? v.error;
+    v.partStates = entry.upload?.partStates() ?? v.partStates;
+
+    if (p.phase === 'uploading') {
+      entry.samples.push({ t, bytes: p.bytesUploaded });
+      while (entry.samples.length > 2 && t - entry.samples[0]!.t > SPEED_WINDOW_MS) entry.samples.shift();
+      const first = entry.samples[0]!;
+      const dt = (t - first.t) / 1000;
+      v.bytesPerSecond = dt > 0.5 ? Math.max(0, (p.bytesUploaded - first.bytes) / dt) : v.bytesPerSecond;
+      v.etaSeconds = v.bytesPerSecond > 0 ? (v.size - p.bytesUploaded) / v.bytesPerSecond : undefined;
+    } else {
+      entry.samples = [];
+      v.bytesPerSecond = 0;
+      v.etaSeconds = undefined;
+    }
+  }
+
+  private fail(entry: Entry, message: string): void {
+    entry.view.error = message;
+    entry.view.phase = entry.upload ? 'error' : 'interrupted';
+    this.publish(true);
+  }
+
+  private viewFromPersisted(localId: string, p: PersistedUpload, canReopenFile: boolean): LocalUpload {
+    const doneBytes = Object.values(p.parts).reduce((n, part) => n + part.size, 0);
+    const states = new Uint8Array(p.partCount);
+    for (const n of Object.keys(p.parts)) states[Number(n) - 1] = 2;
+    return {
+      localId, fileId: p.fileId, fileName: p.fileName, contentType: p.contentType, size: p.fileSize, lastModified: p.lastModified,
+      phase: 'interrupted', bytesUploaded: doneBytes, partsDone: Object.keys(p.parts).length, partCount: p.partCount,
+      activeParts: 0, bytesPerSecond: 0, partStates: states, canReopenFile,
+    };
+  }
+
+  private hasFile(fileId: string): boolean {
+    return [...this.entries.values()].some((e) => e.view.fileId === fileId);
+  }
+
+  private readConcurrency(): number {
+    const stored = Number(this.deps.storage?.getItem(CONCURRENCY_KEY));
+    const n = stored >= 1 ? stored : this.deps.concurrency ?? 4;
+    return Math.min(16, Math.max(1, Math.round(n)));
+  }
+
+  private build(): ManagerSnapshot {
+    return {
+      local: [...this.entries.values()].map((e) => ({ ...e.view })),
+      files: this.files,
+      connection: this.connection,
+      concurrency: this.concurrency,
+    };
+  }
+
+  /** Progress events arrive many times a second; coalesce them so React renders ~10 fps. */
+  private publish(immediate = false): void {
+    const flush = () => {
+      this.notifyTimer = undefined;
+      this.snapshot = this.build();
+      for (const fn of this.listeners) fn();
+    };
+    if (immediate) {
+      if (this.notifyTimer) clearTimeout(this.notifyTimer);
+      flush();
+    } else if (!this.notifyTimer) {
+      this.notifyTimer = setTimeout(flush, 100);
+    }
+  }
+}
+
+function contentTypeOf(file: File): string {
+  if (file.type) return file.type;
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  const byExt: Record<string, string> = {
+    bin: 'application/octet-stream', dat: 'application/octet-stream', mp4: 'video/mp4', mov: 'video/quicktime',
+    zip: 'application/zip', gz: 'application/gzip', csv: 'text/csv', txt: 'text/plain', pdf: 'application/pdf',
+  };
+  return (ext && byExt[ext]) || 'application/octet-stream';
+}
+
+export function createHttpApi(baseUrl: string, userId: string): HttpUploadApi {
+  return new HttpUploadApi({ baseUrl, userId });
+}
