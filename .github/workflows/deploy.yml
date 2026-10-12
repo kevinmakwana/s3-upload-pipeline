@@ -1,0 +1,55 @@
+name: Deploy to AWS (manual)
+
+# Disabled by default. It only runs when someone starts it by hand AND the repository
+# variable ENABLE_AWS_DEPLOY is "true". Authentication is GitHub OIDC: there are no
+# long-lived AWS keys in this repository. See "Deploy to real AWS" in the README.
+on:
+  workflow_dispatch:
+    inputs:
+      allowed_origins:
+        description: Comma-separated browser origins allowed to upload and call the API
+        required: true
+        default: https://app.example.com
+      certificate_arn:
+        description: ACM certificate ARN for the API's HTTPS listener (recommended)
+        required: false
+      alarm_email:
+        description: Email address to subscribe to the alarm topic
+        required: false
+
+permissions:
+  id-token: write # request the OIDC token
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: ${{ vars.ENABLE_AWS_DEPLOY == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: aws
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Deploy
+        working-directory: infra
+        env:
+          ALLOWED_ORIGINS: ${{ inputs.allowed_origins }}
+          CERTIFICATE_ARN: ${{ inputs.certificate_arn }}
+          ALARM_EMAIL: ${{ inputs.alarm_email }}
+        run: |
+          args=(-c deployApi=true -c "allowedOrigins=${ALLOWED_ORIGINS}")
+          [ -n "${CERTIFICATE_ARN}" ] && args+=(-c "certificateArn=${CERTIFICATE_ARN}")
+          [ -n "${ALARM_EMAIL}" ] && args+=(-c "alarmEmail=${ALARM_EMAIL}")
+          npx cdk deploy UploadPipeline --require-approval never "${args[@]}"
