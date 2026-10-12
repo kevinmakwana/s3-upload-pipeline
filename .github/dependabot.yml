@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      aws-sdk:
+        patterns: ["@aws-sdk/*", "@smithy/*"]
+      cdk:
+        patterns: ["aws-cdk", "aws-cdk-lib", "aws-cdk-local", "constructs"]
+      nestjs:
+        patterns: ["@nestjs/*"]
+      react:
+        patterns: ["react", "react-dom", "@types/react", "@types/react-dom", "@vitejs/*", "vite"]
+      testing:
+        patterns: ["jest", "ts-jest", "@types/jest", "supertest", "@types/supertest", "fake-indexeddb"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /apps/api
+    schedule:
+      interval: weekly
