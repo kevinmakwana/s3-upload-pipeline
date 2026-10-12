@@ -1,5 +1,5 @@
 # Build context is the repository root (see infra/lib/upload-pipeline-stack.ts).
-FROM node:22-slim AS build
+FROM node:26-slim AS build
 WORKDIR /repo
 COPY package.json package-lock.json ./
 COPY packages/core/package.json packages/core/
@@ -13,7 +13,7 @@ COPY packages packages
 COPY apps/api apps/api
 RUN npm run build --workspace=@s3up/api
 
-FROM node:22-slim
+FROM node:26-slim
 ENV NODE_ENV=production PORT=3001
 WORKDIR /app
 COPY --from=build /repo/apps/api/dist/main.js ./main.js
