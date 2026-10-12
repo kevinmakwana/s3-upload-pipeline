@@ -75,11 +75,29 @@ describe('UploadPipelineStack', () => {
     ['LocalStack', { local: true }],
   ])('has no resource dependency cycle (%s)', (_name, props) => {
     const template = synth(props as never).toJSON();
-    expect(findCycle(template)).toBeUndefined();
+    expect(findCycle(template as never)).toBeUndefined();
   });
 
   it('detects a cycle when there is one (guards the guard)', () => {
     expect(findCycle({ Resources: { A: { Properties: { x: { Ref: 'B' } } }, B: { DependsOn: ['A'] } } })).toEqual(['A', 'B', 'A']);
+  });
+
+  it('derives the bucket name from the stack id so copies do not collide, and rejects ids that cannot be bucket names', () => {
+    const name = (id: string) => {
+      const app = new App({ context: { 'aws:cdk:bundling-stacks': [] } });
+      const stack = new UploadPipelineStack(app, id, { local: false, deployApi: false, allowedOrigins: ['https://a.example'], env: { account: '123456789012', region: 'us-east-1' } });
+      return JSON.stringify(Template.fromStack(stack).findResources('AWS::S3::Bucket'));
+    };
+    expect(name('Staging')).toContain('staging-uploads-');
+    expect(name('Prod')).toContain('prod-uploads-');
+    expect(() => name('Under_Score')).toThrow(); // CDK itself rejects it first
+    expect(() => name('x'.repeat(27))).toThrow(/bucket name/);
+  });
+
+  it('sets AWS_REGION explicitly on the API container', () => {
+    synth({ deployApi: true }).hasResourceProperties('AWS::ECS::TaskDefinition', {
+      ContainerDefinitions: [Match.objectLike({ Environment: Match.arrayWith([Match.objectLike({ Name: 'AWS_REGION' })]) })],
+    });
   });
 
   it('wires S3 notifications without a helper Lambda, which LocalStack cannot run', () => {

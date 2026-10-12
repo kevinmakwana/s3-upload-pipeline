@@ -35,10 +35,11 @@ async function until(cond: () => boolean) {
   if (!cond()) throw new Error('condition not met');
 }
 
-function makeManager(backend: Backend, dbName: string, storage?: Pick<Storage, 'getItem' | 'setItem'>) {
+/** One worker by default: part order is then deterministic, so "parts 1-2 landed, part 3 failed" holds. */
+function makeManager(backend: Backend, dbName: string, storage?: Pick<Storage, 'getItem' | 'setItem'>, concurrency = 1) {
   return new UploadManager({
     api: backend, transport: backend, store: new IndexedDbResumeStore(dbName), makeSource: (f) => new BrowserFileSource(f),
-    uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency: 2, storage,
+    uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency, storage,
   });
 }
 
@@ -89,7 +90,7 @@ describe('UploadManager', () => {
     store.putHandle = async (id, h) => void handles.set(id, h);
     store.getHandle = async (id) => handles.get(id);
     const make = () =>
-      new UploadManager({ api: backend, transport: backend, store, makeSource: (f) => new BrowserFileSource(f), uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency: 2 });
+      new UploadManager({ api: backend, transport: backend, store, makeSource: (f) => new BrowserFileSource(f), uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency: 1 });
 
     const first = make();
     await first.add(bigFile(), handle);
@@ -141,7 +142,7 @@ describe('UploadManager', () => {
   it('remembers and clamps the concurrency setting', () => {
     const mem = new Map<string, string>();
     const storage = { getItem: (k: string) => mem.get(k) ?? null, setItem: (k: string, v: string) => void mem.set(k, v) };
-    const m = makeManager(new Backend(), 'm5', storage);
+    const m = makeManager(new Backend(), 'm5', storage, 2);
     expect(m.getSnapshot().concurrency).toBe(2);
     m.setConcurrency(99);
     expect(m.getSnapshot().concurrency).toBe(16);
