@@ -7,6 +7,7 @@ import { FakeS3 } from './fake-s3';
 
 export const testConfig: AppConfig = {
   port: 0,
+  auth: { mode: 'header' },
   bucket: 'test-bucket',
   table: 'test-table',
   s3PublicEndpoint: undefined,

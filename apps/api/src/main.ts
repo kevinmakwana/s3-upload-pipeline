@@ -9,12 +9,12 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule.register(config));
   app.enableCors({
     origin: config.corsOrigins,
-    allowedHeaders: ['content-type', 'x-user-id'],
+    allowedHeaders: ['content-type', 'x-user-id', 'authorization'],
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   });
   app.enableShutdownHooks();
   await app.listen(config.port);
-  console.log(JSON.stringify({ message: 'api listening', port: config.port, bucket: config.bucket }));
+  console.log(JSON.stringify({ message: 'api listening', port: config.port, bucket: config.bucket, auth: config.auth.mode }));
 }
 
 void bootstrap();
