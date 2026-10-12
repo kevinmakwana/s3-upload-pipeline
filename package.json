@@ -25,7 +25,8 @@
     "localstack:deploy": "npm run deploy:local -w infra",
     "dev": "concurrently -k -n api,web -c blue,magenta \"npm run dev -w @s3up/api\" \"npm run dev -w @s3up/web\"",
     "gen:file": "tsx scripts/gen-file.ts",
-    "soak": "tsx scripts/soak.ts"
+    "soak": "tsx scripts/soak.ts",
+    "synth:api": "npm run synth:api -w infra"
   },
   "devDependencies": {
     "@aws-sdk/client-sqs": "^3.1149.0",
