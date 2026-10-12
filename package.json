@@ -23,13 +23,15 @@
     "localstack:up": "docker compose up -d --wait localstack",
     "localstack:down": "docker compose down -v",
     "localstack:deploy": "npm run deploy:local -w infra",
-    "dev": "npm run dev --workspace=apps/api --workspace=apps/web --if-present",
-    "gen:file": "tsx scripts/gen-file.ts"
+    "dev": "concurrently -k -n api,web -c blue,magenta \"npm run dev -w @s3up/api\" \"npm run dev -w @s3up/web\"",
+    "gen:file": "tsx scripts/gen-file.ts",
+    "soak": "tsx scripts/soak.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-sqs": "^3.1149.0",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.20.5",
+    "concurrently": "^10.0.6",
     "esbuild": "^0.28.2",
     "jest": "^30.5.2",
     "jimp": "^1.6.1",
