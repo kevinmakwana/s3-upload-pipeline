@@ -15,7 +15,7 @@ module.exports = {
       testEnvironment: 'node',
       transform: tsJest,
       modulePathIgnorePatterns: ['<rootDir>/infra/cdk.out'],
-      testMatch: ['<rootDir>/{packages,apps,functions,infra}/**/*.test.ts'],
+      testMatch: ['<rootDir>/{packages,apps,functions,infra}/**/*.test.ts', '<rootDir>/tests/repo/**/*.test.ts'],
       testPathIgnorePatterns: ['/node_modules/', '/dist/', '/cdk.out/'],
     },
     {
