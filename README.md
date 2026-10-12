@@ -118,7 +118,7 @@ Stop everything with `npm run localstack:down`.
 | --- | --- |
 | Browser (Chrome) → API → LocalStack, 3 GB file | uploaded, verified, processed, `ready` |
 | Browser, 5 GB file with a mid-upload page refresh | resumed from 28/80 parts, `ready`, SHA-256 shown |
-| `npm run soak -- 15`: 15 GiB synthetic file, interrupted at 40% and resumed from a fresh session | __SOAK__ |
+| `npm run soak -- 15`: 15 GiB synthetic file, interrupted at 40% and resumed from a fresh session | 240 parts; resumed from 97/240; the Lambda's SHA-256 matched the locally computed one (about 6 minutes end to end) |
 | `npm run test:integration` (200 MB generated file, interrupted and resumed) | 22 tests pass against LocalStack |
 
 Throughput on a laptop against LocalStack was roughly 150 to 270 MB/s. That says nothing about real S3; it only shows the logic holds at size.
