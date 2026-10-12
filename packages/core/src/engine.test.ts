@@ -92,7 +92,8 @@ class FakeBackend implements UploadApi, PartTransport {
           new Promise((_, reject) => req.signal.addEventListener('abort', () => reject(Object.assign(new Error('Aborted'), { name: 'AbortError' })))),
         ]);
       } else {
-        await new Promise((r) => setTimeout(r, 1));
+        // Long enough that parts reliably overlap, even on a loaded CI machine.
+        await new Promise((r) => setTimeout(r, 15));
       }
       if (req.signal.aborted) throw Object.assign(new Error('Aborted'), { name: 'AbortError' });
       req.onProgress(req.body.byteLength);

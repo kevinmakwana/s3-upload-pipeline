@@ -4,7 +4,8 @@ import { UploadPipelineStack } from '../lib/upload-pipeline-stack';
 const app = new App();
 const flag = (name: string) => String(app.node.tryGetContext(name)) === 'true';
 
-new UploadPipelineStack(app, 'UploadPipeline', {
+// `-c stackName=staging` deploys a second, independent copy next to the default one.
+new UploadPipelineStack(app, String(app.node.tryGetContext('stackName') ?? 'UploadPipeline'), {
   // `-c local=true` targets LocalStack: no Fargate, disposable resources.
   local: flag('local'),
   // `-c deployApi=true` adds the NestJS API on Fargate behind an ALB.

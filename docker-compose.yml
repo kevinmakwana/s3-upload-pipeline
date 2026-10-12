@@ -2,15 +2,17 @@ name: s3-upload-pipeline
 
 services:
   localstack:
-    # Pinned: LocalStack images from 2026.03 onward require an account auth token.
-    # 4.14.0 is the last community release that runs without one.
-    image: localstack/localstack:4.14.0
+    # Pinned: LocalStack images from 2026.03 onward require an account auth token (a free plan
+    # exists). 4.14.0 is the last community release that runs without one. To use a newer image
+    # instead:  LOCALSTACK_IMAGE=localstack/localstack:latest LOCALSTACK_AUTH_TOKEN=... npm run localstack:up
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0}
     ports:
       - "127.0.0.1:4566:4566"
     environment:
       SERVICES: s3,sqs,lambda,dynamodb,cloudformation,sns,cloudwatch,iam,sts,ssm,events,logs,kms
       LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT: "120"
       DEBUG: "0"
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
     volumes:
       # Lambda functions run as sibling containers, so LocalStack needs the Docker socket.
       - /var/run/docker.sock:/var/run/docker.sock

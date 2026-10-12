@@ -46,8 +46,12 @@ export class UploadPipelineStack extends Stack {
     // ---------------------------------------------------------------- storage
     // A fixed name lets the queue policy reference the bucket without a circular dependency,
     // which in turn lets us configure notifications natively instead of via a helper Lambda
-    // (the CDK default), so the same template deploys to LocalStack.
-    const bucketName = `s3up-uploads-${Aws.ACCOUNT_ID}-${Aws.REGION}`;
+    // (the CDK default), so the same template deploys to LocalStack. The stack id is part of the
+    // name so several copies (say, staging and prod) can live in one account and region.
+    if (!/^[a-z0-9][a-z0-9-]{0,25}$/.test(id.toLowerCase())) {
+      throw new Error(`Stack id "${id}" must be 1-26 letters, digits or hyphens: it becomes part of the bucket name`);
+    }
+    const bucketName = `${id.toLowerCase()}-uploads-${Aws.ACCOUNT_ID}-${Aws.REGION}`;
     const bucket = new s3.Bucket(this, 'UploadBucket', {
       bucketName,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
@@ -275,6 +279,8 @@ export class UploadPipelineStack extends Stack {
             TABLE_NAME: table.tableName,
             CORS_ORIGINS: props.allowedOrigins.join(','),
             PORT: '3001',
+            // Don't rely on the platform injecting it: signing and the SDK need the right region.
+            AWS_REGION: Aws.REGION,
           },
           logDriver: ecs.LogDrivers.awsLogs({
             streamPrefix: 'api',
