@@ -47,13 +47,25 @@ describe('UploadPipelineStack', () => {
     });
   });
 
-  it('sends uploads/ ObjectCreated events to the queue', () => {
-    t.hasResourceProperties('Custom::S3BucketNotifications', {
+  it('sends uploads/ ObjectCreated events to the queue, and only S3 from this bucket may enqueue', () => {
+    t.hasResourceProperties('AWS::S3::Bucket', {
       NotificationConfiguration: {
         QueueConfigurations: [
-          Match.objectLike({ Events: ['s3:ObjectCreated:*'], Filter: { Key: { FilterRules: [{ Name: 'prefix', Value: 'uploads/' }] } } }),
+          Match.objectLike({ Event: 's3:ObjectCreated:*', Filter: { S3Key: { Rules: [{ Name: 'prefix', Value: 'uploads/' }] } } }),
         ],
       },
+    });
+    t.hasResourceProperties('AWS::SQS::QueuePolicy', {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Sid: 'AllowS3ToEnqueue',
+            Principal: { Service: 's3.amazonaws.com' },
+            Action: 'sqs:SendMessage',
+            Condition: Match.objectLike({ ArnEquals: Match.anyValue(), StringEquals: Match.anyValue() }),
+          }),
+        ]),
+      }),
     });
   });
 

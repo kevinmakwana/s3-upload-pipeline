@@ -23,8 +23,9 @@ module.exports = {
       testEnvironment: 'node',
       transform: tsJest,
       modulePathIgnorePatterns: ['<rootDir>/infra/cdk.out'],
+      setupFiles: ['<rootDir>/tests/integration/setup.ts'],
       testMatch: ['<rootDir>/tests/integration/**/*.int.test.ts'],
-      testTimeout: 600_000,
+      setupFilesAfterEnv: ['<rootDir>/tests/integration/timeout.ts'],
     },
   ],
 };

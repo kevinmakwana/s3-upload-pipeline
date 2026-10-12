@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import { Aws, CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -13,7 +13,6 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
-import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
@@ -44,7 +43,12 @@ export class UploadPipelineStack extends Stack {
     const removal = local ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN;
 
     // ---------------------------------------------------------------- storage
+    // A fixed name lets the queue policy reference the bucket without a circular dependency,
+    // which in turn lets us configure notifications natively instead of via a helper Lambda
+    // (the CDK default), so the same template deploys to LocalStack.
+    const bucketName = `s3up-uploads-${Aws.ACCOUNT_ID}-${Aws.REGION}`;
     const bucket = new s3.Bucket(this, 'UploadBucket', {
+      bucketName,
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       enforceSSL: true,
       encryption: s3.BucketEncryption.S3_MANAGED,
@@ -101,7 +105,30 @@ export class UploadPipelineStack extends Stack {
     });
 
     // Only objects under uploads/ trigger work, so writing thumbnails can't loop.
-    bucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.SqsDestination(queue), { prefix: 'uploads/' });
+    const enqueuePolicy = queue.addToResourcePolicy(
+      new iam.PolicyStatement({
+        sid: 'AllowS3ToEnqueue',
+        principals: [new iam.ServicePrincipal('s3.amazonaws.com')],
+        actions: ['sqs:SendMessage'],
+        resources: [queue.queueArn],
+        conditions: {
+          ArnEquals: { 'aws:SourceArn': `arn:${Aws.PARTITION}:s3:::${bucketName}` },
+          StringEquals: { 'aws:SourceAccount': Aws.ACCOUNT_ID },
+        },
+      }),
+    );
+    const cfnBucket = bucket.node.defaultChild as s3.CfnBucket;
+    cfnBucket.notificationConfiguration = {
+      queueConfigurations: [
+        {
+          event: 's3:ObjectCreated:*',
+          queue: queue.queueArn,
+          filter: { s3Key: { rules: [{ name: 'prefix', value: 'uploads/' }] } },
+        },
+      ],
+    };
+    // S3 validates the queue's policy when the notification is saved, so the policy must exist first.
+    if (enqueuePolicy.policyDependable) cfnBucket.node.addDependency(enqueuePolicy.policyDependable);
 
     const worker = new NodejsFunction(this, 'ProcessUploadFn', {
       entry: path.join(repoRoot, 'functions', 'src', 'process-upload', 'handler.ts'),
