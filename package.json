@@ -16,8 +16,8 @@
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "jest --selectProjects unit",
-    "test:integration": "jest --selectProjects integration --runInBand",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects unit",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects integration --runInBand",
     "build": "npm run build --workspaces --if-present",
     "synth": "npm run synth -w infra",
     "localstack:up": "docker compose up -d --wait localstack",
