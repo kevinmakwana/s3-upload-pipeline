@@ -10,6 +10,7 @@ import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
  */
 export function createS3Client(overrides: S3ClientConfig = {}): S3Client {
   return new S3Client({
+    region: process.env.AWS_REGION ?? 'us-east-1',
     forcePathStyle: process.env.S3_FORCE_PATH_STYLE === 'true',
     // Only compute checksums we ask for; presigned URLs must not grow surprise headers.
     requestChecksumCalculation: 'WHEN_REQUIRED',
@@ -19,7 +20,7 @@ export function createS3Client(overrides: S3ClientConfig = {}): S3Client {
 }
 
 export function createDocClient(): DynamoDBDocumentClient {
-  return DynamoDBDocumentClient.from(new DynamoDBClient({}), {
+  return DynamoDBDocumentClient.from(new DynamoDBClient({ region: process.env.AWS_REGION ?? 'us-east-1' }), {
     marshallOptions: { removeUndefinedValues: true },
   });
 }
