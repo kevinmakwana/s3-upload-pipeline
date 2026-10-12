@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Typecheck, unit tests, build, cdk synth
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Build (API bundle + web app)
+        run: npm run build
+      - name: cdk synth (LocalStack-compatible stack)
+        run: npm run synth
+      - name: cdk synth (with the Fargate API)
+        run: npm run synth:api
+
+  integration:
+    name: Integration tests (LocalStack)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      localstack:
+        # Pinned: images from 2026.03 onward need an auth token; 4.14.0 does not.
+        image: localstack/localstack:4.14.0
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: s3,sqs,lambda,dynamodb,cloudformation,sns,cloudwatch,iam,sts,ssm,events,logs,kms
+          LAMBDA_RUNTIME_ENVIRONMENT_TIMEOUT: "120"
+        volumes:
+          # LocalStack runs the worker Lambda as a sibling container.
+          - /var/run/docker.sock:/var/run/docker.sock
+        options: >-
+          --health-cmd "curl -sf http://localhost:4566/_localstack/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Deploy the CDK stack into LocalStack
+        run: npm run localstack:deploy
+      - name: Integration tests (generates and uploads a ~200 MB file)
+        run: npm run test:integration
+      - name: LocalStack logs
+        if: failure()
+        run: docker logs "${{ job.services.localstack.id }}" 2>&1 | tail -n 300
