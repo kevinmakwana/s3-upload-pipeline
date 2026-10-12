@@ -15,8 +15,80 @@ function synth(props: Partial<ConstructorParameters<typeof UploadPipelineStack>[
   return Template.fromStack(stack);
 }
 
+/** Every logical id a template value points at (Ref, GetAtt, Sub, DependsOn). */
+function references(value: unknown, ids: Set<string>, out = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) value.forEach((v) => references(v, ids, out));
+  else if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      if (k === 'Ref' && typeof v === 'string' && ids.has(v)) out.add(v);
+      else if (k === 'Fn::GetAtt') {
+        const id = Array.isArray(v) ? v[0] : String(v).split('.')[0];
+        if (ids.has(id)) out.add(id);
+      } else if (k === 'Fn::Sub') {
+        const text = Array.isArray(v) ? v[0] : v;
+        for (const m of String(text).matchAll(/\$\{([A-Za-z0-9]+)(?:\.[^}]*)?\}/g)) if (ids.has(m[1]!)) out.add(m[1]!);
+        if (Array.isArray(v)) references(v[1], ids, out);
+      } else references(v, ids, out);
+    }
+  }
+  return out;
+}
+
+/** CloudFormation rejects dependency cycles only at deploy time, so catch them here. */
+function findCycle(template: { Resources: Record<string, Record<string, unknown>> }): string[] | undefined {
+  const ids = new Set(Object.keys(template.Resources));
+  const edges = new Map<string, string[]>();
+  for (const [id, res] of Object.entries(template.Resources)) {
+    const deps = references({ ...res, DependsOn: undefined }, ids);
+    for (const d of ([] as string[]).concat((res.DependsOn as string | string[] | undefined) ?? [])) deps.add(d);
+    deps.delete(id);
+    edges.set(id, [...deps]);
+  }
+  const state = new Map<string, 1 | 2>();
+  const stack: string[] = [];
+  const visit = (id: string): string[] | undefined => {
+    if (state.get(id) === 2) return undefined;
+    if (state.get(id) === 1) return [...stack.slice(stack.indexOf(id)), id];
+    state.set(id, 1);
+    stack.push(id);
+    for (const d of edges.get(id) ?? []) {
+      const cycle = visit(d);
+      if (cycle) return cycle;
+    }
+    stack.pop();
+    state.set(id, 2);
+    return undefined;
+  };
+  for (const id of ids) {
+    const cycle = visit(id);
+    if (cycle) return cycle;
+  }
+  return undefined;
+}
+
 describe('UploadPipelineStack', () => {
   const t = synth();
+
+  it.each([
+    ['AWS', {}],
+    ['AWS with the API', { deployApi: true }],
+    ['LocalStack', { local: true }],
+  ])('has no resource dependency cycle (%s)', (_name, props) => {
+    const template = synth(props as never).toJSON();
+    expect(findCycle(template)).toBeUndefined();
+  });
+
+  it('detects a cycle when there is one (guards the guard)', () => {
+    expect(findCycle({ Resources: { A: { Properties: { x: { Ref: 'B' } } }, B: { DependsOn: ['A'] } } })).toEqual(['A', 'B', 'A']);
+  });
+
+  it('wires S3 notifications without a helper Lambda, which LocalStack cannot run', () => {
+    expect(Object.keys(t.findResources('Custom::S3BucketNotifications'))).toEqual([]);
+    const bucket = Object.values(t.findResources('AWS::S3::Bucket'))[0] as { DependsOn?: string[]; Properties: { BucketName: unknown } };
+    expect(bucket.DependsOn?.some((d) => d.startsWith('ProcessingQueuePolicy'))).toBe(true);
+    // A fixed (pseudo-parameter based) name is what breaks the bucket <-> queue-policy cycle.
+    expect(JSON.stringify(bucket.Properties.BucketName)).not.toContain('"Ref":"UploadBucket');
+  });
 
   it('blocks all public access, enforces TLS and encrypts the bucket', () => {
     t.hasResourceProperties('AWS::S3::Bucket', {
