@@ -36,3 +36,6 @@ export const manager = new UploadManager({
     }
   })(),
 });
+
+// Handy for poking at uploads from the console while developing (not included in production builds).
+if (import.meta.env.DEV) (window as unknown as { __s3up: UploadManager }).__s3up = manager;

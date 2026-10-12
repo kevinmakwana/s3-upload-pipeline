@@ -52,6 +52,14 @@ body {
   font-family: var(--font);
   font-size: 16px;
   line-height: 1.5;
+}
+
+/* Figures only: tabular numerals keep progress readouts from jittering without affecting prose. */
+.row-stats .metric,
+.row-stats .stat-main,
+.row-size,
+.stepper-value b,
+.partmap {
   font-variant-numeric: tabular-nums;
 }
 

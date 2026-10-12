@@ -79,12 +79,12 @@ function LocalDetails({ local, busy, onPick }: { local: LocalUpload; busy: boole
             <span className="stat-main">
               {formatBytes(local.bytesUploaded)} / {formatBytes(local.size)}
             </span>
-            <span>
+            <span className="metric">
               {local.partsDone} of {local.partCount} parts
             </span>
-            <span>{local.activeParts} in flight</span>
-            <span>{formatRate(local.bytesPerSecond)}</span>
-            <span>{local.etaSeconds !== undefined && remaining > 0 ? `${formatDuration(local.etaSeconds)} left` : null}</span>
+            <span className="metric">{local.activeParts} in flight</span>
+            <span className="metric">{formatRate(local.bytesPerSecond)}</span>
+            <span className="metric">{local.etaSeconds !== undefined && remaining > 0 ? `${formatDuration(local.etaSeconds)} left` : null}</span>
           </>
         ) : null}
         {phase === 'paused' ? (
@@ -141,9 +141,11 @@ function ServerDetails({ file }: { file: FileDto }) {
         {file.status === 'processing' ? <span>Computing checksum and extracting metadata…</span> : null}
         {file.status === 'ready' && r ? (
           <>
-            <span title={r.sha256}>SHA-256 {shortHash(r.sha256)}</span>
+            <span className="metric" title={r.sha256}>
+              SHA-256 {shortHash(r.sha256)}
+            </span>
             {r.width && r.height ? (
-              <span>
+              <span className="metric">
                 {r.width} × {r.height} px
               </span>
             ) : null}

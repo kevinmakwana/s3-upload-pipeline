@@ -228,8 +228,10 @@ export class UploadManager {
     entry.upload = upload;
     entry.samples = [];
     upload.subscribe((p) => {
+      const firstSightOfFileId = !!p.fileId && !entry.view.fileId;
       this.onProgress(entry, p);
-      if (p.fileId && entry.handle && !entry.view.fileId) void this.deps.store.putHandle?.(p.fileId, entry.handle);
+      // Keep the handle next to the session so a reload can reopen the file without a picker.
+      if (firstSightOfFileId && entry.handle) void this.deps.store.putHandle?.(p.fileId!, entry.handle);
       this.publish();
     });
     this.onProgress(entry, upload.progress);

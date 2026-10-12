@@ -74,6 +74,36 @@ describe('UploadManager', () => {
     await until(() => reloaded.getSnapshot().local.length === 0);
   });
 
+  it('stores the file handle with the session, and on reload resumes without a file picker', async () => {
+    const backend = new Backend();
+    backend.failPart = 3;
+    const handle = {
+      kind: 'file',
+      queryPermission: async () => 'granted',
+      requestPermission: async () => 'granted',
+      getFile: async () => bigFile(),
+    } as unknown as FileSystemFileHandle;
+    const store = new IndexedDbResumeStore('m-handle');
+    const handles = new Map<string, FileSystemFileHandle>();
+    // fake-indexeddb can't clone this fake handle, so keep handles beside the real store.
+    store.putHandle = async (id, h) => void handles.set(id, h);
+    store.getHandle = async (id) => handles.get(id);
+    const make = () =>
+      new UploadManager({ api: backend, transport: backend, store, makeSource: (f) => new BrowserFileSource(f), uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency: 2 });
+
+    const first = make();
+    await first.add(bigFile(), handle);
+    await until(() => first.getSnapshot().local[0]?.phase === 'error');
+    expect(handles.has('f1')).toBe(true);
+
+    backend.failPart = undefined;
+    backend.puts = [];
+    const reloaded = make();
+    await reloaded.restore(); // permission is already granted, so this continues on its own
+    await until(() => backend.status === 'uploaded');
+    expect(backend.puts).toEqual([3]);
+  });
+
   it('refuses a different file when resuming and keeps the session', async () => {
     const backend = new Backend();
     backend.failPart = 2;
