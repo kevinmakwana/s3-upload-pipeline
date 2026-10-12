@@ -147,6 +147,7 @@ describe('UploadPipelineStack', () => {
     const withApi = synth({ deployApi: true });
     withApi.resourceCountIs('AWS::ECS::Service', 1);
     withApi.hasResourceProperties('AWS::ElasticLoadBalancingV2::TargetGroup', { HealthCheckPath: '/health' });
+    withApi.hasResourceProperties('AWS::ECS::TaskDefinition', { RuntimePlatform: { CpuArchitecture: 'X86_64', OperatingSystemFamily: 'LINUX' } });
 
     const local = synth({ local: true });
     local.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Delete' });

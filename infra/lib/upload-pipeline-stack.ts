@@ -4,6 +4,7 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
 import * as iam from 'aws-cdk-lib/aws-iam';
@@ -134,7 +135,9 @@ export class UploadPipelineStack extends Stack {
       entry: path.join(repoRoot, 'functions', 'src', 'process-upload', 'handler.ts'),
       handler: 'handler',
       runtime: lambda.Runtime.NODEJS_22_X,
-      architecture: lambda.Architecture.ARM_64,
+      // Graviton is cheaper on AWS. LocalStack runs the function in a container on this machine,
+      // so locally match the host (the bundle is pure JavaScript and runs on either).
+      architecture: local && process.arch !== 'arm64' ? lambda.Architecture.X86_64 : lambda.Architecture.ARM_64,
       memorySize: 1536,
       timeout: WORKER_TIMEOUT,
       logGroup: new logs.LogGroup(this, 'WorkerLogs', { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
@@ -258,13 +261,15 @@ export class UploadPipelineStack extends Stack {
         minHealthyPercent: 100,
         assignPublicIp: true,
         circuitBreaker: { rollback: true },
+        runtimePlatform: { cpuArchitecture: ecs.CpuArchitecture.X86_64, operatingSystemFamily: ecs.OperatingSystemFamily.LINUX },
         certificate,
         redirectHTTP: !!certificate,
         // Browsers hold SSE connections open; keep the ALB from cutting them off between heartbeats.
         idleTimeout: Duration.seconds(120),
         taskImageOptions: {
           containerPort: 3001,
-          image: ecs.ContainerImage.fromAsset(repoRoot, { file: 'apps/api/Dockerfile' }),
+          // Build for the platform the task runs on, whatever machine runs `cdk deploy`.
+          image: ecs.ContainerImage.fromAsset(repoRoot, { file: 'apps/api/Dockerfile', platform: ecr_assets.Platform.LINUX_AMD64 }),
           environment: {
             BUCKET_NAME: bucket.bucketName,
             TABLE_NAME: table.tableName,
