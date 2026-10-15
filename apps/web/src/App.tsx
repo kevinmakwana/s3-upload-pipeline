@@ -4,7 +4,7 @@ import { DropZone } from './components/DropZone';
 import { FileRow } from './components/FileRow';
 import { useManager } from './hooks';
 import { watchFiles } from './lib/sse';
-import { API_URL, manager, userId } from './lib/runtime';
+import { API_URL, authMode, getAuthHeaders, manager, userId } from './lib/runtime';
 import type { LocalUpload } from './lib/manager';
 
 type Row = { key: string; local?: LocalUpload; file?: FileDto; sort: string };
@@ -18,7 +18,7 @@ export function App() {
     void manager.refreshFiles();
     void watchFiles({
       baseUrl: API_URL,
-      userId,
+      getHeaders: getAuthHeaders,
       signal: abort.signal,
       onFiles: (f) => manager.setFiles(f),
       onState: (s) => manager.setConnection(s),
@@ -79,9 +79,13 @@ export function App() {
       )}
 
       <footer className="foot">
-        <p>
-          Signed in as <b>{userId}</b>, a demo identity. Your files live under <code>uploads/{userId}/</code>.
-        </p>
+        {authMode === 'demo' ? (
+          <p>
+            Signed in as <b>{userId}</b>, a demo identity. Your files live under <code>uploads/{userId}/</code>.
+          </p>
+        ) : (
+          <p>Signed in. Your files are private to your account.</p>
+        )}
       </footer>
     </main>
   );

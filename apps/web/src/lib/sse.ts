@@ -1,4 +1,4 @@
-import type { FileDto } from '@s3up/core';
+import type { FileDto, HeaderProvider } from '@s3up/core';
 
 export interface SseMessage {
   event: string;
@@ -39,22 +39,22 @@ export type ConnectionState = 'connecting' | 'live' | 'reconnecting';
 
 export interface WatchOptions {
   baseUrl: string;
-  userId: string;
+  getHeaders: HeaderProvider;
   onFiles(files: FileDto[]): void;
   onState(state: ConnectionState): void;
   signal: AbortSignal;
 }
 
 /**
- * Live file status over SSE. EventSource can't send the x-user-id header, so this reads the
- * stream with fetch. Reconnects with backoff; the server resends the full list on connect.
+ * Live file status over SSE. EventSource can't send auth headers (x-user-id or a bearer token),
+ * so this reads the stream with fetch. Reconnects with backoff; the server resends the full list on connect.
  */
-export async function watchFiles({ baseUrl, userId, onFiles, onState, signal }: WatchOptions): Promise<void> {
+export async function watchFiles({ baseUrl, getHeaders, onFiles, onState, signal }: WatchOptions): Promise<void> {
   let attempt = 0;
   while (!signal.aborted) {
     onState(attempt === 0 ? 'connecting' : 'reconnecting');
     try {
-      const res = await fetch(`${baseUrl}/files/stream`, { headers: { 'x-user-id': userId, accept: 'text/event-stream' }, signal });
+      const res = await fetch(`${baseUrl}/files/stream`, { headers: { ...(await getHeaders()), accept: 'text/event-stream' }, signal });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
       onState('live');
       attempt = 0;
