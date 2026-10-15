@@ -6,7 +6,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "synth": "cdk synth --quiet",
-    "synth:api": "cdk synth --quiet -c deployApi=true",
+    "synth:api": "cdk synth --quiet -c deployApi=true -c jwtIssuer=https://idp.example.com/ -c jwtAudience=upload-api -c jwtJwksUrl=https://idp.example.com/.well-known/jwks.json",
     "deploy:local": "bash scripts/deploy-local.sh",
     "deploy": "cdk deploy --require-approval never -c deployApi=true",
     "destroy": "cdk destroy"

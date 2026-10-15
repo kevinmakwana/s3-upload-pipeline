@@ -19,6 +19,14 @@ import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
 
+/**
+ * How the API authenticates callers. `jwt` verifies bearer tokens from your identity provider.
+ * `header` trusts any x-user-id: demo only, and must be chosen on purpose.
+ */
+export type ApiAuth =
+  | { mode: 'jwt'; issuer: string; audience: string; jwksUrl: string }
+  | { mode: 'header' };
+
 export interface UploadPipelineProps extends StackProps {
   /** Target LocalStack: disposable resources, no ECS/ALB. */
   local: boolean;
@@ -26,6 +34,8 @@ export interface UploadPipelineProps extends StackProps {
   deployApi: boolean;
   /** Origins allowed to PUT parts / GET thumbnails from the browser, and to call the API. */
   allowedOrigins: string[];
+  /** Required when `deployApi` is on: the API container fails closed without an auth choice. */
+  auth?: ApiAuth;
   /** ACM certificate for the ALB's HTTPS listener (recommended; the browser UI is usually HTTPS). */
   certificateArn?: string;
   /** Subscribe this address to the alarm topic. */
@@ -252,6 +262,7 @@ export class UploadPipelineStack extends Stack {
 
     let apiUrl: string | undefined;
     if (props.deployApi) {
+      const authEnvironment = apiAuthEnvironment(props.auth);
       // No NAT gateway (≈$32/month): tasks sit in public subnets and only the ALB accepts traffic.
       const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 0 });
       const certificate = props.certificateArn
@@ -281,6 +292,7 @@ export class UploadPipelineStack extends Stack {
             PORT: '3001',
             // Don't rely on the platform injecting it: signing and the SDK need the right region.
             AWS_REGION: Aws.REGION,
+            ...authEnvironment,
           },
           logDriver: ecs.LogDrivers.awsLogs({
             streamPrefix: 'api',
@@ -303,4 +315,21 @@ export class UploadPipelineStack extends Stack {
     new CfnOutput(this, 'ApiPolicyArn', { value: apiPolicy.managedPolicyArn });
     new CfnOutput(this, 'AlarmTopicArn', { value: alarmTopic.topicArn });
   }
+}
+
+/**
+ * Environment that picks the API's auth mode. The image runs with NODE_ENV=production, where the
+ * API refuses the demo header auth unless it is explicitly allowed, so the choice must be made here.
+ */
+function apiAuthEnvironment(auth: ApiAuth | undefined): Record<string, string> {
+  if (!auth) {
+    throw new Error(
+      'deployApi needs an auth choice: pass -c jwtIssuer=... -c jwtAudience=... -c jwtJwksUrl=https://... ' +
+        '(or -c insecureDemoAuth=true to accept that anyone can impersonate any user)',
+    );
+  }
+  if (auth.mode === 'header') return { AUTH_MODE: 'header', ALLOW_INSECURE_DEMO_AUTH: 'true' };
+  if (!auth.issuer || !auth.audience) throw new Error('JWT auth needs both an issuer and an audience');
+  if (!/^https:\/\//.test(auth.jwksUrl)) throw new Error('The JWKS URL must be an https URL');
+  return { AUTH_MODE: 'jwt', JWT_ISSUER: auth.issuer, JWT_AUDIENCE: auth.audience, JWT_JWKS_URL: auth.jwksUrl };
 }

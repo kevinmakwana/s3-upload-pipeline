@@ -10,6 +10,15 @@ on:
         description: Comma-separated browser origins allowed to upload and call the API
         required: true
         default: https://app.example.com
+      jwt_issuer:
+        description: Token issuer (`iss`) the API accepts, for example https://your-tenant.auth0.com/
+        required: true
+      jwt_audience:
+        description: Audience (`aud`) the API requires in tokens
+        required: true
+      jwt_jwks_url:
+        description: HTTPS URL of the issuer's JSON Web Key Set
+        required: true
       certificate_arn:
         description: ACM certificate ARN for the API's HTTPS listener (recommended)
         required: false
@@ -46,10 +55,19 @@ jobs:
         working-directory: infra
         env:
           ALLOWED_ORIGINS: ${{ inputs.allowed_origins }}
+          JWT_ISSUER: ${{ inputs.jwt_issuer }}
+          JWT_AUDIENCE: ${{ inputs.jwt_audience }}
+          JWT_JWKS_URL: ${{ inputs.jwt_jwks_url }}
           CERTIFICATE_ARN: ${{ inputs.certificate_arn }}
           ALARM_EMAIL: ${{ inputs.alarm_email }}
         run: |
-          args=(-c deployApi=true -c "allowedOrigins=${ALLOWED_ORIGINS}")
+          args=(
+            -c deployApi=true
+            -c "allowedOrigins=${ALLOWED_ORIGINS}"
+            -c "jwtIssuer=${JWT_ISSUER}"
+            -c "jwtAudience=${JWT_AUDIENCE}"
+            -c "jwtJwksUrl=${JWT_JWKS_URL}"
+          )
           [ -n "${CERTIFICATE_ARN}" ] && args+=(-c "certificateArn=${CERTIFICATE_ARN}")
           [ -n "${ALARM_EMAIL}" ] && args+=(-c "alarmEmail=${ALARM_EMAIL}")
           npx cdk deploy UploadPipeline --require-approval never "${args[@]}"
