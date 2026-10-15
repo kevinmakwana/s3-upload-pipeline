@@ -40,6 +40,15 @@ describe('repository consistency', () => {
     expect([...readme]).toEqual([...compose]);
   });
 
+  it('passes the JWT settings through the deploy workflow, since the API refuses to start without an auth choice', () => {
+    const deploy = read('.github/workflows/deploy.yml');
+    for (const ctx of ['jwtIssuer', 'jwtAudience', 'jwtJwksUrl']) expect(deploy).toContain(`-c "${ctx}=`);
+    expect(deploy).not.toContain('insecureDemoAuth');
+    // CI synthesizes the API stack too, so its script must carry the same settings.
+    const synthApi = JSON.parse(read('infra/package.json')).scripts['synth:api'] as string;
+    for (const ctx of ['jwtIssuer', 'jwtAudience', 'jwtJwksUrl']) expect(synthApi).toContain(`-c ${ctx}=`);
+  });
+
   it('keeps the deploy workflow manual-only and gated behind an explicit repository variable', () => {
     const deploy = read('.github/workflows/deploy.yml');
     expect(deploy).toMatch(/^on:\s*\n\s+workflow_dispatch:/m);

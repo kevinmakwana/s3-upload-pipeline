@@ -85,7 +85,22 @@ sequenceDiagram
 - Allowed types and a maximum size are validated by the API before anything is created, and again by the worker, which rejects content that does not match its declared type (a ZIP renamed `.png` ends up `failed`).
 - IAM is least privilege and checked by tests: the worker may read `uploads/*`, write `thumbnails/*` and use two DynamoDB actions; the API gets a separate managed policy with only what it calls.
 
-> **Auth is a stand-in.** The demo identifies users by an `x-user-id` header (the web app generates a random one). Swap [`apps/api/src/common/user.ts`](apps/api/src/common/user.ts) for a JWT/OIDC guard returning the same `userId` and everything downstream already keys off it.
+### Authentication
+
+A global guard ([`auth.guard.ts`](apps/api/src/auth/auth.guard.ts)) authenticates every route except `/health` and hands the rest of the API a `userId`. Two modes, chosen by `AUTH_MODE`:
+
+- **`jwt`** verifies a `Authorization: Bearer <token>` from your identity provider (Auth0, Cognito, Entra ID, Keycloak, anything that publishes a JWKS). It checks the signature, issuer, audience and expiry, accepts asymmetric algorithms only, and derives the user id from a hash of issuer and subject, so it is always safe inside an S3 key prefix.
+- **`header`** (the default, for the local demo only) trusts an `x-user-id` header, so anyone can claim to be anyone. With `NODE_ENV=production` the API **refuses to start** in this mode unless `ALLOW_INSECURE_DEMO_AUTH=true`.
+
+The web app mirrors this with `VITE_AUTH_MODE`. In `bearer` mode it calls `window.s3upAuth.getToken()` before every request and every SSE connect, so your login code can refresh tokens there:
+
+```html
+<script>
+  window.s3upAuth = { getToken: async () => myLoginLibrary.getAccessToken() };
+</script>
+```
+
+This repository does not include a login flow or an identity provider; you bring your own.
 
 ## Quick start (LocalStack, no AWS account)
 
@@ -135,12 +150,17 @@ Environment variables for the API (the quick start writes `.env.local` for you; 
 | `PRESIGN_EXPIRES_SECONDS` | 900 | Lifetime of part URLs (clamped to 60..3600) |
 | `CORS_ORIGINS` | `http://localhost:5173` | Browser origins the API accepts |
 | `S3_PUBLIC_ENDPOINT` | unset | Only if the browser reaches S3 at a different URL than the API does |
+| `AUTH_MODE` | `header` | `jwt` to verify bearer tokens, `header` for the insecure local demo (see [Authentication](#authentication)) |
+| `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_JWKS_URL` | required with `AUTH_MODE=jwt` | Expected `iss` and `aud`, and the https URL of the issuer's JWKS |
+| `ALLOW_INSECURE_DEMO_AUTH` | unset | Set to `true` to let `AUTH_MODE=header` start with `NODE_ENV=production`. Do not |
+
+Web app build-time variables: `VITE_API_URL` (API base URL) and `VITE_AUTH_MODE` (`demo`, the default, or `bearer`).
 
 Concurrency is a setting in the UI (1 to 16 parallel parts, remembered in `localStorage`). Allowed types live in [`packages/core/src/validation.ts`](packages/core/src/validation.ts).
 
 ### API
 
-All routes except `/health` require `x-user-id`.
+All routes except `/health` require authentication: a bearer token in `jwt` mode, or `x-user-id` in the local demo mode.
 
 | Route | Purpose |
 | --- | --- |
@@ -173,8 +193,13 @@ cd infra
 npx cdk bootstrap                      # once per account and region
 npx cdk deploy -c deployApi=true \
   -c allowedOrigins=https://app.example.com \
+  -c jwtIssuer=https://your-tenant.auth0.com/ \
+  -c jwtAudience=https://upload-api.example.com \
+  -c jwtJwksUrl=https://your-tenant.auth0.com/.well-known/jwks.json \
   -c certificateArn=arn:aws:acm:...    # recommended: HTTPS on the ALB
 ```
+
+`deployApi` needs an auth choice: the three `jwt*` values, which become `AUTH_MODE=jwt` and `JWT_*` on the container. Without them `cdk deploy` stops with an error rather than shipping an API that would refuse to start. (`-c insecureDemoAuth=true` exists for throwaway experiments; it lets anyone act as any user.)
 
 The outputs include the API URL. Build the web app against it and host the static files anywhere (for example S3 and CloudFront); hosting is deliberately not part of the stack:
 
@@ -182,7 +207,7 @@ The outputs include the API URL. Build the web app against it and host the stati
 VITE_API_URL=https://api.example.com npm run build -w @s3up/web
 ```
 
-Browsers on an HTTPS site cannot call an HTTP API, so pass `certificateArn` for anything real. Remember to replace the demo `x-user-id` auth first.
+Browsers on an HTTPS site cannot call an HTTP API, so pass `certificateArn` for anything real. Build the web app with `VITE_AUTH_MODE=bearer` and provide `window.s3upAuth` (see [Authentication](#authentication)).
 
 ### Deploying from GitHub Actions with OIDC
 
@@ -205,7 +230,7 @@ Browsers on an HTTPS site cannot call an HTTP API, so pass `certificateArn` for 
    ```
 3. Give the role permission to assume the CDK bootstrap roles (`sts:AssumeRole` on `arn:aws:iam::<ACCOUNT_ID>:role/cdk-*`), which keeps its own permissions tiny.
 4. In the repository settings, create an environment named `aws`, then set the variables `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION` and `ENABLE_AWS_DEPLOY=true`.
-5. Run **Deploy to AWS (manual)** from the Actions tab.
+5. Run **Deploy to AWS (manual)** from the Actions tab and fill in the allowed origins and the JWT issuer, audience and JWKS URL.
 
 ### Cost notes
 

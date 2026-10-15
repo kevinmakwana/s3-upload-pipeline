@@ -2,6 +2,8 @@ import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { UploadPipelineStack } from '../lib/upload-pipeline-stack';
 
+const JWT_AUTH = { mode: 'jwt', issuer: 'https://idp.example.com/', audience: 'upload-api', jwksUrl: 'https://idp.example.com/.well-known/jwks.json' } as const;
+
 function synth(props: Partial<ConstructorParameters<typeof UploadPipelineStack>[2]> = {}) {
   // Skip esbuild bundling: these tests assert on the template, not the asset.
   const app = new App({ context: { 'aws:cdk:bundling-stacks': [] } });
@@ -9,10 +11,19 @@ function synth(props: Partial<ConstructorParameters<typeof UploadPipelineStack>[
     local: false,
     deployApi: false,
     allowedOrigins: ['https://app.example.com'],
+    // The API refuses to deploy without an auth choice; most tests just need a valid one.
+    ...(props.deployApi && !('auth' in props) ? { auth: JWT_AUTH } : {}),
     env: { account: '123456789012', region: 'us-east-1' },
     ...props,
   });
   return Template.fromStack(stack);
+}
+
+/** Environment variables of the API container, as a name -> value map. */
+function apiEnvironment(template: Template): Record<string, unknown> {
+  const [task] = Object.values(template.findResources('AWS::ECS::TaskDefinition'));
+  const env = (task!.Properties.ContainerDefinitions[0].Environment ?? []) as { Name: string; Value: unknown }[];
+  return Object.fromEntries(env.map((e) => [e.Name, e.Value]));
 }
 
 /** Every logical id a template value points at (Ref, GetAtt, Sub, DependsOn). */
@@ -92,6 +103,37 @@ describe('UploadPipelineStack', () => {
     expect(name('Prod')).toContain('prod-uploads-');
     expect(() => name('Under_Score')).toThrow(); // CDK itself rejects it first
     expect(() => name('x'.repeat(27))).toThrow(/bucket name/);
+  });
+
+  describe('API authentication', () => {
+    it('passes the JWT settings to the API container (it refuses to start in production without them)', () => {
+      const env = apiEnvironment(synth({ deployApi: true }));
+      expect(env).toMatchObject({
+        AUTH_MODE: 'jwt',
+        JWT_ISSUER: JWT_AUTH.issuer,
+        JWT_AUDIENCE: JWT_AUTH.audience,
+        JWT_JWKS_URL: JWT_AUTH.jwksUrl,
+      });
+      expect(env).not.toHaveProperty('ALLOW_INSECURE_DEMO_AUTH');
+    });
+
+    it('refuses to deploy the API with no auth choice', () => {
+      expect(() => synth({ deployApi: true, auth: undefined })).toThrow(/auth/i);
+    });
+
+    it('requires an https JWKS URL', () => {
+      expect(() => synth({ deployApi: true, auth: { ...JWT_AUTH, jwksUrl: 'http://idp.example.com/jwks.json' } })).toThrow(/https/);
+    });
+
+    it('lets you opt in to the insecure demo auth explicitly, and says so in the environment', () => {
+      const env = apiEnvironment(synth({ deployApi: true, auth: { mode: 'header' } }));
+      expect(env).toMatchObject({ AUTH_MODE: 'header', ALLOW_INSECURE_DEMO_AUTH: 'true' });
+      expect(env).not.toHaveProperty('JWT_ISSUER');
+    });
+
+    it('needs no auth when the API is not deployed', () => {
+      expect(() => synth()).not.toThrow();
+    });
   });
 
   it('sets AWS_REGION explicitly on the API container', () => {
