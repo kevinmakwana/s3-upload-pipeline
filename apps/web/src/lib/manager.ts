@@ -1,5 +1,4 @@
 import {
-  HttpUploadApi,
   Upload,
   type FileDto,
   type PartSource,
@@ -336,8 +335,4 @@ function contentTypeOf(file: File): string {
     zip: 'application/zip', gz: 'application/gzip', csv: 'text/csv', txt: 'text/plain', pdf: 'application/pdf',
   };
   return (ext && byExt[ext]) || 'application/octet-stream';
-}
-
-export function createHttpApi(baseUrl: string, userId: string): HttpUploadApi {
-  return new HttpUploadApi({ baseUrl, userId });
 }

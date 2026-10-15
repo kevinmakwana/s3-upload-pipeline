@@ -2,10 +2,22 @@ import { HttpError } from './errors';
 import type { UploadApi } from './engine';
 import type { FileDto, InitUploadRequest, InitUploadResponse, ListPartsResponse, PresignPartResponse } from './types';
 
+export type HeaderProvider = () => Record<string, string> | Promise<Record<string, string>>;
+
 export interface HttpApiOptions {
   baseUrl: string;
-  userId: string;
+  /** Demo auth: sent as x-user-id. Ignored when `getHeaders` is given. */
+  userId?: string;
+  /** Real auth: called before every request, e.g. to return `{ authorization: 'Bearer <token>' }`. */
+  getHeaders?: HeaderProvider;
   fetch?: typeof fetch;
+}
+
+/** Headers that identify the caller, from whichever auth method is configured. */
+export function authHeaders(options: Pick<HttpApiOptions, 'userId' | 'getHeaders'>): Promise<Record<string, string>> | Record<string, string> {
+  if (options.getHeaders) return options.getHeaders();
+  if (!options.userId) throw new Error('HttpUploadApi needs either userId or getHeaders');
+  return { 'x-user-id': options.userId };
 }
 
 /** UploadApi over the Nest HTTP API. Works in browsers and Node (global fetch). */
@@ -47,11 +59,18 @@ export class HttpUploadApi implements UploadApi {
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+    let auth: Record<string, string>;
+    try {
+      auth = await authHeaders(this.options);
+    } catch (err) {
+      // e.g. the token could not be refreshed: signing in again is the fix, so don't retry blindly.
+      throw new HttpError(err instanceof Error ? err.message : 'Not signed in', 401, false);
+    }
     let res: Response;
     try {
       res = await this.fetchFn(`${this.baseUrl}${path}`, {
         method,
-        headers: { 'x-user-id': this.options.userId, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+        headers: { ...auth, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
     } catch (err) {

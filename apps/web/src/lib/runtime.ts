@@ -1,6 +1,8 @@
+import { HttpUploadApi, type HeaderProvider } from '@s3up/core';
+import { createAuthHeaders } from './auth';
 import { IndexedDbResumeStore } from './idb-store';
 import { BrowserFileSource } from './browser-source';
-import { createHttpApi, UploadManager } from './manager';
+import { UploadManager } from './manager';
 import { XhrTransport } from './xhr-transport';
 
 export const API_URL = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001').replace(/\/$/, '');
@@ -21,10 +23,15 @@ export function demoUserId(): string {
   }
 }
 
-export const userId = demoUserId();
+export const authMode: 'demo' | 'bearer' = import.meta.env.VITE_AUTH_MODE === 'bearer' ? 'bearer' : 'demo';
+export const userId = authMode === 'demo' ? demoUserId() : undefined;
+
+export const getAuthHeaders: HeaderProvider = createAuthHeaders(
+  authMode === 'bearer' ? { mode: 'bearer', getToken: () => window.s3upAuth?.getToken() } : { mode: 'demo', userId: userId! },
+);
 
 export const manager = new UploadManager({
-  api: createHttpApi(API_URL, userId),
+  api: new HttpUploadApi({ baseUrl: API_URL, getHeaders: getAuthHeaders }),
   transport: new XhrTransport(),
   store: new IndexedDbResumeStore(),
   makeSource: (file) => new BrowserFileSource(file),
