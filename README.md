@@ -169,8 +169,9 @@ All routes except `/health` require authentication: a bearer token in `jwt` mode
 | `GET /uploads/:id/parts` | `ListParts` from S3, used to reconcile on resume |
 | `POST /uploads/:id/complete` | Verify and complete (idempotent) |
 | `DELETE /uploads/:id` | Abort and free the stored parts |
-| `GET /files`, `GET /files/:id` | File status and processing result |
-| `GET /files/stream` | SSE stream of the file list |
+| `GET /files?limit=&cursor=` | One page of your files, newest first (`limit` 1 to 100, default 50). The response is `{ files, nextCursor? }`; pass `nextCursor` back as `cursor` for the next page. Aborted uploads are left out. A malformed cursor is a `400` |
+| `GET /files/:id` | File status and processing result |
+| `GET /files/stream` | SSE stream of the newest page (`{ files, nextCursor? }`); older pages come from `GET /files` |
 
 ## Testing
 
@@ -247,7 +248,7 @@ Rough figures for `us-east-1`; prices change, so check the AWS pricing pages bef
 - **Why no custom resource for notifications?** CDK's default S3-to-SQS wiring uses a helper Lambda that LocalStack does not run. The stack sets the bucket's notification configuration directly, which needs a fixed bucket name to break a circular reference with the queue policy. The result deploys identically to LocalStack and AWS.
 - **Worker time limit.** Lambda stops at 15 minutes, and checksumming streams the whole object. At 100 to 250 MB/s that comfortably covers tens of gigabytes; for much larger files move the worker to Fargate or Batch.
 - **Thumbnails** use pure-JS Jimp (no native binaries to bundle), so they cover PNG, JPEG and GIF up to 25 MB. Larger or other images are still checksummed, with the reason recorded.
-- **SSE polls DynamoDB** once a second per connection. At scale you would fan out from a DynamoDB Stream instead.
+- **SSE polls DynamoDB** once a second per connection, for the newest page only. At scale you would fan out from a DynamoDB Stream instead. The web app merges each pushed page into the older pages the user has loaded with *Load older files*.
 - **Resume UX differs by browser.** Persisting a file handle needs the File System Access API (Chromium). Elsewhere the upload session is still saved and you re-select the same file; the name and size must match.
 - **Max file size** defaults to 20 GiB; S3 itself allows 5 TiB, so raise it deliberately.
 

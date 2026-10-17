@@ -1,6 +1,7 @@
 import {
   Upload,
   type FileDto,
+  type FilePage,
   type PartSource,
   type PartTransport,
   type PersistedUpload,
@@ -38,12 +39,15 @@ export interface LocalUpload {
 export interface ManagerSnapshot {
   local: LocalUpload[];
   files: FileDto[];
+  /** Older files exist on the server that have not been loaded yet. */
+  hasMoreFiles: boolean;
+  loadingMoreFiles: boolean;
   connection: ConnectionState;
   concurrency: number;
 }
 
 export interface ManagerDeps {
-  api: UploadApi & { listFiles?(): Promise<FileDto[]> };
+  api: UploadApi & { listFilesPage?(options?: { limit?: number; cursor?: string }): Promise<FilePage> };
   transport: PartTransport;
   store: ResumeStore & {
     list(): Promise<PersistedUpload[]>;
@@ -76,6 +80,9 @@ export const CONCURRENCY_KEY = 's3up:concurrency';
 export class UploadManager {
   private readonly entries = new Map<string, Entry>();
   private files: FileDto[] = [];
+  /** Where the next page of older files starts; undefined once the whole list is loaded. */
+  private filesCursor?: string;
+  private loadingMoreFiles = false;
   private connection: ConnectionState = 'connecting';
   private concurrency: number;
   private snapshot: ManagerSnapshot;
@@ -97,9 +104,44 @@ export class UploadManager {
   };
   getSnapshot = (): ManagerSnapshot => this.snapshot;
 
-  setFiles(files: FileDto[]): void {
-    this.files = files;
+  /**
+   * Applies the newest page of files (from the live stream or a refresh). A page without a cursor
+   * is the complete list and replaces everything. Otherwise it replaces only the files it covers,
+   * so older pages the user has already loaded stay put.
+   */
+  applyFirstPage({ files, nextCursor }: FilePage): void {
+    if (!nextCursor) {
+      this.files = files;
+      this.filesCursor = undefined;
+    } else {
+      const oldest = files.at(-1)?.createdAt;
+      const inPage = new Set(files.map((f) => f.id));
+      const older = oldest === undefined ? [] : this.files.filter((f) => !inPage.has(f.id) && f.createdAt <= oldest);
+      this.files = [...files, ...older];
+      // Nothing older is loaded, so the page's own cursor is the way to older files.
+      if (older.length === 0) this.filesCursor = nextCursor;
+    }
     this.publish(true);
+  }
+
+  /** Fetches the next page of older files. A failure keeps the cursor so it can be retried. */
+  async loadMoreFiles(): Promise<void> {
+    const cursor = this.filesCursor;
+    if (!cursor || this.loadingMoreFiles || !this.deps.api.listFilesPage) return;
+    this.loadingMoreFiles = true;
+    this.publish(true);
+    try {
+      const page = await this.deps.api.listFilesPage({ cursor });
+      if (this.filesCursor !== cursor) return; // the list was replaced while we waited
+      const have = new Set(this.files.map((f) => f.id));
+      this.files = [...this.files, ...page.files.filter((f) => !have.has(f.id))];
+      this.filesCursor = page.nextCursor;
+    } catch {
+      /* keep what we have; the button stays so the user can retry */
+    } finally {
+      this.loadingMoreFiles = false;
+      this.publish(true);
+    }
   }
 
   setConnection(state: ConnectionState): void {
@@ -207,8 +249,8 @@ export class UploadManager {
 
   async refreshFiles(): Promise<void> {
     try {
-      const files = await this.deps.api.listFiles?.();
-      if (files) this.setFiles(files);
+      const page = await this.deps.api.listFilesPage?.();
+      if (page) this.applyFirstPage(page);
     } catch {
       /* the live stream will catch up */
     }
@@ -306,6 +348,8 @@ export class UploadManager {
     return {
       local: [...this.entries.values()].map((e) => ({ ...e.view })),
       files: this.files,
+      hasMoreFiles: this.filesCursor !== undefined,
+      loadingMoreFiles: this.loadingMoreFiles,
       connection: this.connection,
       concurrency: this.concurrency,
     };
