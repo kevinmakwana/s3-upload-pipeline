@@ -1,6 +1,7 @@
 import type { ProcessingResult } from '@s3up/core';
 import type { FileRecord } from './records';
-import type { FileStore, LedgerOutcome, ProcessingLedger } from './store';
+import { clampLimit, decodeCursor, encodeCursor } from './cursor';
+import type { FileStore, LedgerOutcome, ListOptions, ProcessingLedger, RecordPage } from './store';
 
 /** In-memory twin of the DynamoDB implementations; the same contract tests run against both. */
 export class MemoryFileStore implements FileStore {
@@ -14,12 +15,21 @@ export class MemoryFileStore implements FileStore {
     const r = this.records.get(fileId);
     return r && structuredClone(r);
   }
-  async listByUser(userId: string, limit = 100) {
-    return [...this.records.values()]
-      .filter((r) => r.userId === userId)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit)
-      .map((r) => structuredClone(r));
+  async listByUser(userId: string, options: ListOptions = {}): Promise<RecordPage> {
+    const limit = clampLimit(options.limit);
+    const position = options.cursor === undefined ? undefined : decodeCursor(options.cursor);
+    // Newest first; id breaks ties so equal timestamps still have one stable order.
+    // Plain code-unit comparison, not localeCompare: it must agree with the `<` used for the cursor.
+    const desc = (a: string, b: string) => (a < b ? 1 : a > b ? -1 : 0);
+    const newestFirst = (a: FileRecord, b: FileRecord) => desc(a.createdAt, b.createdAt) || desc(a.id, b.id);
+    const after = (r: FileRecord) =>
+      !position || r.createdAt < position.createdAt || (r.createdAt === position.createdAt && r.id < position.id);
+    const matching = [...this.records.values()]
+      .filter((r) => r.userId === userId && (!options.excludeAborted || r.status !== 'aborted') && after(r))
+      .sort(newestFirst);
+    const items = matching.slice(0, limit).map((r) => structuredClone(r));
+    const last = items.at(-1);
+    return { items, ...(matching.length > limit && last ? { nextCursor: encodeCursor(last) } : {}) };
   }
   async markUploaded(fileId: string, info: { etag?: string; versionId?: string; at: string }) {
     const r = this.records.get(fileId);

@@ -8,11 +8,26 @@ import type { FileRecord } from './records';
  * Implementations enforce this atomically, so the API and the worker can race safely
  * (S3's event can reach the worker before the API has acknowledged the upload).
  */
+export interface ListOptions {
+  /** Page size (1 to 1000, default 100). */
+  limit?: number;
+  /** `nextCursor` of the previous page. Throws InvalidCursorError if it is malformed. */
+  cursor?: string;
+  /** Leave out aborted uploads. Pages are still filled, so a page is short only at the end. */
+  excludeAborted?: boolean;
+}
+
+export interface RecordPage {
+  items: FileRecord[];
+  /** Pass back as `cursor` for the next page. Absent when there are no more records. */
+  nextCursor?: string;
+}
+
 export interface FileStore {
   create(record: FileRecord): Promise<void>;
   get(fileId: string): Promise<FileRecord | undefined>;
-  /** Newest first. */
-  listByUser(userId: string, limit?: number): Promise<FileRecord[]>;
+  /** One page of the user's files, newest first. */
+  listByUser(userId: string, options?: ListOptions): Promise<RecordPage>;
   /** uploading -> uploaded. If the worker already moved on, only the metadata is recorded. */
   markUploaded(fileId: string, info: { etag?: string; versionId?: string; at: string }): Promise<FileRecord | undefined>;
   /** uploading -> aborted. Returns false if it was no longer uploading. */

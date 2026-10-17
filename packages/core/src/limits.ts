@@ -10,3 +10,7 @@ export const S3_MAX_PARTS = 10_000;
 /** Defaults used by this project. 64 MiB keeps a 15 GiB file at 240 parts. */
 export const DEFAULT_PART_SIZE = 64 * MiB;
 export const DEFAULT_MAX_FILE_SIZE = 20 * GiB;
+
+/** File list paging: what the API returns when `limit` is not given, and the most it will return. */
+export const DEFAULT_PAGE_SIZE = 50;
+export const MAX_PAGE_SIZE = 100;
