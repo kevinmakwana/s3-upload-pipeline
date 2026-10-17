@@ -1,15 +1,28 @@
-import { Controller, Get, Inject, Param, Sse } from '@nestjs/common';
+import { Controller, Get, Inject, Param, Query, Sse } from '@nestjs/common';
+import { MAX_PAGE_SIZE } from '@s3up/core';
 import { map } from 'rxjs';
+import { z } from 'zod';
 import { CurrentUser } from '../common/user';
+import { parse } from '../common/zod';
 import { FilesService } from './files.service';
+
+const listQuerySchema = z.object({
+  limit: z
+    .string()
+    .regex(/^\d+$/, 'must be a whole number')
+    .transform(Number)
+    .pipe(z.number().min(1).max(MAX_PAGE_SIZE))
+    .optional(),
+  cursor: z.string().min(1).max(512).optional(),
+});
 
 @Controller('files')
 export class FilesController {
   constructor(@Inject(FilesService) private readonly files: FilesService) {}
 
   @Get()
-  async list(@CurrentUser() userId: string) {
-    return { files: await this.files.list(userId) };
+  list(@CurrentUser() userId: string, @Query() query: unknown) {
+    return this.files.list(userId, parse(listQuerySchema, query));
   }
 
   // Declared before ':id' so "stream" isn't treated as a file id.

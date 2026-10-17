@@ -1,8 +1,9 @@
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { GetCommand, PutCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient, type QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { ProcessingResult } from '@s3up/core';
 import type { FileRecord } from './records';
-import type { FileStore, LedgerOutcome, ProcessingLedger } from './store';
+import { clampLimit, decodeCursor, encodeCursor } from './cursor';
+import type { FileStore, LedgerOutcome, ListOptions, ProcessingLedger, RecordPage } from './store';
 
 export const USER_INDEX = 'byUser';
 const fileKey = (id: string) => `FILE#${id}`;
@@ -42,18 +43,41 @@ export class DynamoFileStore implements FileStore {
     return res.Item ? toRecord(res.Item) : undefined;
   }
 
-  async listByUser(userId: string, limit = 100): Promise<FileRecord[]> {
-    const res = await this.doc.send(
-      new QueryCommand({
-        TableName: this.tableName,
-        IndexName: USER_INDEX,
-        KeyConditionExpression: 'gsiUser = :u',
-        ExpressionAttributeValues: { ':u': userId },
-        ScanIndexForward: false,
-        Limit: limit,
-      }),
-    );
-    return (res.Items ?? []).map(toRecord);
+  async listByUser(userId: string, options: ListOptions = {}): Promise<RecordPage> {
+    const limit = clampLimit(options.limit);
+    // Rebuilt from the caller's own user id, never taken from the cursor.
+    const position = options.cursor === undefined ? undefined : decodeCursor(options.cursor);
+    let startKey: Record<string, unknown> | undefined = position && {
+      pk: fileKey(position.id),
+      gsiUser: userId,
+      gsiCreated: position.createdAt,
+    };
+
+    // Ask for one more record than the page holds: if it shows up there is a next page, so the
+    // last page never needs an empty follow-up. A filter runs after DynamoDB's Limit, so keep
+    // querying until the page is full, asking only for what is still missing.
+    const wanted = limit + 1;
+    const found: FileRecord[] = [];
+    do {
+      const res: QueryCommandOutput = await this.doc.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          IndexName: USER_INDEX,
+          KeyConditionExpression: 'gsiUser = :u',
+          ...(options.excludeAborted ? { FilterExpression: '#status <> :aborted', ExpressionAttributeNames: { '#status': 'status' } } : {}),
+          ExpressionAttributeValues: { ':u': userId, ...(options.excludeAborted ? { ':aborted': 'aborted' } : {}) },
+          ScanIndexForward: false,
+          Limit: wanted - found.length,
+          ExclusiveStartKey: startKey,
+        }),
+      );
+      found.push(...(res.Items ?? []).map(toRecord));
+      startKey = res.LastEvaluatedKey;
+    } while (startKey && found.length < wanted);
+
+    const items = found.slice(0, limit);
+    const last = items.at(-1);
+    return { items, ...(found.length > limit && last ? { nextCursor: encodeCursor(last) } : {}) };
   }
 
   async markUploaded(fileId: string, info: { etag?: string; versionId?: string; at: string }): Promise<FileRecord | undefined> {

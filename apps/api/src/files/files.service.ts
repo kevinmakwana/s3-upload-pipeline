@@ -1,8 +1,8 @@
 import { GetObjectCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import type { FileDto } from '@s3up/core';
-import { toDto, type FileRecord, type FileStore } from '@s3up/data';
+import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { DEFAULT_PAGE_SIZE, type FileDto, type FilePage } from '@s3up/core';
+import { InvalidCursorError, toDto, type FileRecord, type FileStore, type RecordPage } from '@s3up/data';
 import { Observable, interval } from 'rxjs';
 import type { AppConfig } from '../config';
 import { CONFIG, FILES, S3_PRESIGNER } from '../common/tokens';
@@ -15,8 +15,10 @@ export class FilesService {
     @Inject(FILES) private readonly files: FileStore,
   ) {}
 
-  async list(userId: string): Promise<FileDto[]> {
-    return this.toDtos(await this.visible(userId));
+  /** One page of the caller's files, newest first. Aborted uploads are bookkeeping, not shown. */
+  async list(userId: string, { limit = DEFAULT_PAGE_SIZE, cursor }: { limit?: number; cursor?: string } = {}): Promise<FilePage> {
+    const page = await this.page(userId, limit, cursor);
+    return { files: await this.toDtos(page.items), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
   }
 
   async get(userId: string, fileId: string): Promise<FileDto> {
@@ -26,11 +28,12 @@ export class FilesService {
   }
 
   /**
-   * Server-sent events: a `files` event with the full list whenever anything changes, plus a
-   * periodic `ping` so proxies keep the connection open. State is polled from DynamoDB per
-   * connection; at larger scale you would fan out from a DynamoDB Stream instead.
+   * Server-sent events: a `files` event with the newest page (and the cursor for the rest)
+   * whenever anything on it changes, plus a periodic `ping` so proxies keep the connection open.
+   * Older pages are not pushed; clients fetch them with GET /files?cursor=. State is polled from
+   * DynamoDB per connection; at larger scale you would fan out from a DynamoDB Stream instead.
    */
-  stream(userId: string): Observable<{ type: string; data: object }> {
+  stream(userId: string): Observable<{ type: string; data: FilePage | object }> {
     return new Observable((subscriber) => {
       let last = '';
       let stopped = false;
@@ -38,11 +41,12 @@ export class FilesService {
 
       const tick = async () => {
         try {
-          const records = await this.visible(userId);
-          const signature = records.map((r) => `${r.id}:${r.status}:${r.updatedAt}`).join('|');
+          const page = await this.page(userId, DEFAULT_PAGE_SIZE);
+          const signature = page.items.map((r) => `${r.id}:${r.status}:${r.updatedAt}`).join('|') + (page.nextCursor ? '+' : '');
           if (signature !== last && !stopped) {
             last = signature;
-            subscriber.next({ type: 'files', data: { files: await this.toDtos(records) } });
+            const data: FilePage = { files: await this.toDtos(page.items), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+            subscriber.next({ type: 'files', data });
           }
         } catch (err) {
           if (!stopped) subscriber.error(err);
@@ -61,9 +65,13 @@ export class FilesService {
     });
   }
 
-  private async visible(userId: string): Promise<FileRecord[]> {
-    // Aborted uploads are bookkeeping, not something to show.
-    return (await this.files.listByUser(userId)).filter((r) => r.status !== 'aborted');
+  private async page(userId: string, limit: number, cursor?: string): Promise<RecordPage> {
+    try {
+      return await this.files.listByUser(userId, { limit, cursor, excludeAborted: true });
+    } catch (err) {
+      if (err instanceof InvalidCursorError) throw new BadRequestException('Invalid cursor');
+      throw err;
+    }
   }
 
   private toDtos(records: FileRecord[]): Promise<FileDto[]> {

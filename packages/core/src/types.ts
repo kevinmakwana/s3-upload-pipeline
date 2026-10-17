@@ -33,6 +33,13 @@ export interface FileDto {
   thumbnailUrl?: string;
 }
 
+/** One page of the file list, newest first. */
+export interface FilePage {
+  files: FileDto[];
+  /** Pass back as `cursor` to get the next page. Absent on the last page. */
+  nextCursor?: string;
+}
+
 export interface InitUploadRequest {
   fileName: string;
   fileSize: number;

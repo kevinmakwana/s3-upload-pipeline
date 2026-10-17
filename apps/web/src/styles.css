@@ -264,6 +264,12 @@ code {
   gap: 14px;
 }
 
+.more {
+  margin-top: 18px;
+  display: flex;
+  justify-content: center;
+}
+
 .empty {
   margin-top: 32px;
   color: var(--ink-soft);
