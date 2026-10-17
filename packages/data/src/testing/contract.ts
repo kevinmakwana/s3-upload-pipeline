@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { InvalidCursorError } from '../cursor';
 import type { FileRecord } from '../records';
 import type { FileStore, ProcessingLedger } from '../store';
 
@@ -31,8 +32,91 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
       await store.create(newer);
       await store.create(other);
       expect(await store.get(older.id)).toMatchObject({ id: older.id, userId: user });
-      expect((await store.listByUser(user)).map((r) => r.id)).toEqual([newer.id, older.id]);
+      expect((await store.listByUser(user)).items.map((r) => r.id)).toEqual([newer.id, older.id]);
+      expect((await store.listByUser(user)).nextCursor).toBeUndefined();
       expect(await store.get('missing')).toBeUndefined();
+    });
+
+    describe('listByUser pagination', () => {
+      const at = (n: number) => `2026-02-01T00:00:${String(n).padStart(2, '0')}.000Z`;
+      async function seed(store: FileStore, count: number, stamp = at) {
+        const user = `u${randomUUID().slice(0, 8)}`;
+        const records: FileRecord[] = [];
+        for (let i = 1; i <= count; i++) {
+          const r = newRecord({ userId: user, createdAt: stamp(i) });
+          await store.create(r);
+          records.push(r);
+        }
+        return { user, newestFirst: [...records].reverse().map((r) => r.id), records };
+      }
+      async function walk(store: FileStore, user: string, limit: number, excludeAborted = false) {
+        const pages: string[][] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await store.listByUser(user, { limit, cursor, excludeAborted });
+          pages.push(page.items.map((r) => r.id));
+          cursor = page.nextCursor;
+        } while (cursor && pages.length < 50);
+        return pages;
+      }
+
+      it('walks the list newest-first in pages, with no gaps or repeats', async () => {
+        const { store } = await make();
+        const { user, newestFirst } = await seed(store, 7);
+        const pages = await walk(store, user, 3);
+        expect(pages.map((p) => p.length)).toEqual([3, 3, 1]);
+        expect(pages.flat()).toEqual(newestFirst);
+      });
+
+      it('gives no cursor (and no empty trailing page) when the last page is exactly full', async () => {
+        const { store } = await make();
+        const { user, newestFirst } = await seed(store, 6);
+        const first = await store.listByUser(user, { limit: 3 });
+        expect(first.nextCursor).toEqual(expect.any(String));
+        const second = await store.listByUser(user, { limit: 3, cursor: first.nextCursor });
+        expect(second.items.map((r) => r.id)).toEqual(newestFirst.slice(3));
+        expect(second.nextCursor).toBeUndefined();
+      });
+
+      it('keeps records with an identical createdAt in a stable order, each exactly once', async () => {
+        const { store } = await make();
+        const { user, records } = await seed(store, 5, () => at(1));
+        const pages = await walk(store, user, 2);
+        expect(pages.flat().sort()).toEqual(records.map((r) => r.id).sort());
+      });
+
+      it('fills every page when aborted records are excluded', async () => {
+        const { store } = await make();
+        const { user, newestFirst } = await seed(store, 7);
+        for (const id of [newestFirst[0]!, newestFirst[2]!, newestFirst[3]!, newestFirst[4]!]) await store.markAborted(id, T1);
+        const expected = [newestFirst[1]!, newestFirst[5]!, newestFirst[6]!];
+        const pages = await walk(store, user, 2, true);
+        expect(pages).toEqual([expected.slice(0, 2), expected.slice(2)]);
+        expect((await walk(store, user, 10, false))[0]).toHaveLength(7); // included unless asked
+      });
+
+      it('never returns another user\'s records, even with a cursor taken from someone else', async () => {
+        const { store } = await make();
+        const a = await seed(store, 3);
+        const b = await seed(store, 3);
+        const cursor = (await store.listByUser(a.user, { limit: 1 })).nextCursor;
+        const page = await store.listByUser(b.user, { limit: 10, cursor });
+        expect(page.items.every((r) => r.userId === b.user)).toBe(true);
+      });
+
+      it.each(['not-a-cursor', 'e30', Buffer.from('{"i":1,"c":2}').toString('base64url'), 'x'.repeat(5000)])(
+        'rejects a malformed cursor (%#)',
+        async (cursor) => {
+          const { store } = await make();
+          await expect(store.listByUser('alice', { cursor, limit: 5 })).rejects.toBeInstanceOf(InvalidCursorError);
+        },
+      );
+
+      it('clamps the limit to at least one record', async () => {
+        const { store } = await make();
+        const { user } = await seed(store, 2);
+        expect((await store.listByUser(user, { limit: 0 })).items).toHaveLength(1);
+      });
     });
 
     it('refuses to overwrite an existing record', async () => {
