@@ -1,4 +1,4 @@
-import type { FileDto, HeaderProvider } from '@s3up/core';
+import type { FilePage, HeaderProvider } from '@s3up/core';
 
 export interface SseMessage {
   event: string;
@@ -40,7 +40,8 @@ export type ConnectionState = 'connecting' | 'live' | 'reconnecting';
 export interface WatchOptions {
   baseUrl: string;
   getHeaders: HeaderProvider;
-  onFiles(files: FileDto[]): void;
+  /** The newest page of files, and the cursor for older ones when there are more. */
+  onFiles(page: FilePage): void;
   onState(state: ConnectionState): void;
   signal: AbortSignal;
 }
@@ -65,7 +66,7 @@ export async function watchFiles({ baseUrl, getHeaders, onFiles, onState, signal
         const { value, done } = await reader.read();
         if (done) break;
         for (const msg of parser.push(decoder.decode(value, { stream: true }))) {
-          if (msg.event === 'files') onFiles((JSON.parse(msg.data) as { files: FileDto[] }).files);
+          if (msg.event === 'files') onFiles(JSON.parse(msg.data) as FilePage);
         }
       }
     } catch (err) {

@@ -42,6 +42,22 @@ describe('HttpUploadApi', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('asks for a page with limit and cursor, and returns the cursor for the next one', async () => {
+    const { fn, calls } = fakeFetch(() => json({ files: [{ id: 'f2' }], nextCursor: 'abc_-' }));
+    const api = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn });
+    expect(await api.listFilesPage({ limit: 25, cursor: 'prev+/=' })).toEqual({ files: [{ id: 'f2' }], nextCursor: 'abc_-' });
+    expect(calls[0]!.url).toBe('http://api/files?limit=25&cursor=prev%2B%2F%3D');
+    await api.listFilesPage();
+    expect(calls[1]!.url).toBe('http://api/files');
+  });
+
+  it('omits nextCursor on the last page, and listFiles returns just the first page of files', async () => {
+    const { fn } = fakeFetch(() => json({ files: [{ id: 'f1' }] }));
+    const api = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn });
+    expect(await api.listFilesPage()).toEqual({ files: [{ id: 'f1' }] });
+    expect(await api.listFiles()).toEqual([{ id: 'f1' }]);
+  });
+
   it('sends JSON bodies and unwraps responses', async () => {
     const { fn, calls } = fakeFetch(() => json({ file: { id: 'f1' } }, 201));
     const file = await new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn }).init({ fileName: 'a.bin', fileSize: 1, contentType: 'application/octet-stream' });

@@ -1,6 +1,6 @@
 import { HttpError } from './errors';
 import type { UploadApi } from './engine';
-import type { FileDto, InitUploadRequest, InitUploadResponse, ListPartsResponse, PresignPartResponse } from './types';
+import type { FileDto, FilePage, InitUploadRequest, InitUploadResponse, ListPartsResponse, PresignPartResponse } from './types';
 
 export type HeaderProvider = () => Record<string, string> | Promise<Record<string, string>>;
 
@@ -50,8 +50,18 @@ export class HttpUploadApi implements UploadApi {
     await this.request('DELETE', `/uploads/${fileId}`);
   }
 
+  /** One page of files, newest first. Pass the previous page's `nextCursor` to continue. */
+  async listFilesPage(options: { limit?: number; cursor?: string } = {}): Promise<FilePage> {
+    const query = new URLSearchParams();
+    if (options.limit !== undefined) query.set('limit', String(options.limit));
+    if (options.cursor !== undefined) query.set('cursor', options.cursor);
+    const suffix = query.size ? `?${query}` : '';
+    return this.request<FilePage>('GET', `/files${suffix}`);
+  }
+
+  /** The newest page of files only; use `listFilesPage` to go further back. */
   async listFiles(): Promise<FileDto[]> {
-    return (await this.request<{ files: FileDto[] }>('GET', '/files')).files;
+    return (await this.listFilesPage()).files;
   }
 
   async getFile(fileId: string): Promise<FileDto> {

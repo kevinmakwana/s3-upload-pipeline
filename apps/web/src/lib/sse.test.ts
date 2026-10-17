@@ -1,4 +1,4 @@
-import type { FileDto } from '@s3up/core';
+import type { FilePage } from '@s3up/core';
 import { SseParser, watchFiles } from './sse';
 
 describe('SseParser', () => {
@@ -35,34 +35,39 @@ describe('watchFiles', () => {
       { status: 200 },
     );
 
-  async function runOnce(getHeaders: () => Record<string, string> | Promise<Record<string, string>>) {
+  async function runOnce(getHeaders: () => Record<string, string> | Promise<Record<string, string>>, cursor?: string) {
     const seen: { url: string; headers: Record<string, string> }[] = [];
-    const files: FileDto[][] = [];
+    const pages: FilePage[] = [];
     const abort = new AbortController();
     globalThis.fetch = (async (url: string, init: RequestInit) => {
       seen.push({ url, headers: init.headers as Record<string, string> });
-      return streaming(init.signal, 'event: files\ndata: {"files":[{"id":"f1"}]}\n\n');
+      return streaming(init.signal, `event: files\ndata: ${JSON.stringify({ files: [{ id: 'f1' }], ...(cursor ? { nextCursor: cursor } : {}) })}\n\n`);
     }) as unknown as typeof fetch;
     const done = watchFiles({
       baseUrl: 'http://api',
       getHeaders,
-      onFiles: (f) => {
-        files.push(f);
+      onFiles: (page) => {
+        pages.push(page);
         abort.abort();
       },
       onState: () => undefined,
       signal: abort.signal,
     });
     await done;
-    return { seen, files };
+    return { seen, pages };
   }
 
   it('authenticates the stream with whatever the header provider returns (a bearer token)', async () => {
-    const { seen, files } = await runOnce(async () => ({ authorization: 'Bearer t1' }));
+    const { seen, pages } = await runOnce(async () => ({ authorization: 'Bearer t1' }));
     expect(seen).toHaveLength(1);
     expect(seen[0]!.url).toBe('http://api/files/stream');
     expect(seen[0]!.headers).toEqual({ authorization: 'Bearer t1', accept: 'text/event-stream' });
-    expect(files).toEqual([[{ id: 'f1' }]]);
+    expect(pages).toEqual([{ files: [{ id: 'f1' }] }]);
+  });
+
+  it('passes the cursor for older pages along with the newest page', async () => {
+    const { pages } = await runOnce(() => ({ 'x-user-id': 'demo-1' }), 'next-1');
+    expect(pages).toEqual([{ files: [{ id: 'f1' }], nextCursor: 'next-1' }]);
   });
 
   it('works with the demo header too, and does not add any other identity', async () => {

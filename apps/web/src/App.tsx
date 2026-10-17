@@ -10,7 +10,7 @@ import type { LocalUpload } from './lib/manager';
 type Row = { key: string; local?: LocalUpload; file?: FileDto; sort: string };
 
 export function App() {
-  const { local, files, connection, concurrency } = useManager();
+  const { local, files, connection, concurrency, hasMoreFiles, loadingMoreFiles } = useManager();
 
   useEffect(() => {
     const abort = new AbortController();
@@ -20,7 +20,7 @@ export function App() {
       baseUrl: API_URL,
       getHeaders: getAuthHeaders,
       signal: abort.signal,
-      onFiles: (f) => manager.setFiles(f),
+      onFiles: (page) => manager.applyFirstPage(page),
       onState: (s) => manager.setConnection(s),
     });
     return () => abort.abort();
@@ -77,6 +77,14 @@ export function App() {
           ))}
         </ul>
       )}
+
+      {hasMoreFiles ? (
+        <div className="more">
+          <button type="button" className="btn" disabled={loadingMoreFiles} onClick={() => void manager.loadMoreFiles()}>
+            {loadingMoreFiles ? 'Loading…' : 'Load older files'}
+          </button>
+        </div>
+      ) : null}
 
       <footer className="foot">
         {authMode === 'demo' ? (

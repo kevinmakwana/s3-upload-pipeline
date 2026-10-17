@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { HttpError, MiB, type FileDto, type PartTransport, type PutRequest, type UploadApi } from '@s3up/core';
+import { HttpError, MiB, type FileDto, type FilePage, type PartTransport, type PutRequest, type UploadApi } from '@s3up/core';
 import { BrowserFileSource } from './browser-source';
 import { IndexedDbResumeStore } from './idb-store';
 import { CONCURRENCY_KEY, UploadManager } from './manager';
@@ -150,5 +150,115 @@ describe('UploadManager', () => {
     expect(m.getSnapshot().concurrency).toBe(1);
     expect(mem.get(CONCURRENCY_KEY)).toBe('1');
     expect(makeManager(new Backend(), 'm6', storage).getSnapshot().concurrency).toBe(1);
+  });
+});
+
+describe('UploadManager file list paging', () => {
+  const dto = (n: number, extra: Partial<FileDto> = {}): FileDto => ({
+    id: `f${n}`, fileName: `f${n}.bin`, contentType: 'application/octet-stream', size: 1, status: 'ready', partSize: 5 * MiB, partCount: 1,
+    createdAt: `2026-01-01T00:00:0${n}.000Z`, updatedAt: `2026-01-01T00:00:0${n}.000Z`, ...extra,
+  });
+  const ids = (m: UploadManager) => m.getSnapshot().files.map((f) => f.id);
+
+  /** A backend whose list answers come from `answer`, recording the options of each request. */
+  function paged(answer: (opts: { limit?: number; cursor?: string }) => Promise<FilePage>) {
+    const backend = Object.assign(new Backend(), { listFilesPage: jest.fn((opts: { limit?: number; cursor?: string } = {}) => answer(opts)) });
+    return { backend, manager: makeManager(backend as Backend, `paging-${Math.random()}`) };
+  }
+  const threePages: Record<string, FilePage> = {
+    first: { files: [dto(5), dto(4)], nextCursor: 'c1' },
+    c1: { files: [dto(3), dto(2)], nextCursor: 'c2' },
+    c2: { files: [dto(1)] },
+  };
+  const serve = async (o: { cursor?: string }) => threePages[o.cursor ?? 'first']!;
+
+  it('shows the first page and offers more only while a cursor remains', async () => {
+    const { manager } = paged(serve);
+    expect(manager.getSnapshot()).toMatchObject({ files: [], hasMoreFiles: false, loadingMoreFiles: false });
+    await manager.refreshFiles();
+    expect(ids(manager)).toEqual(['f5', 'f4']);
+    expect(manager.getSnapshot().hasMoreFiles).toBe(true);
+  });
+
+  it('loads older pages on demand and appends them in order', async () => {
+    const { manager, backend } = paged(serve);
+    await manager.refreshFiles();
+    await manager.loadMoreFiles();
+    expect(ids(manager)).toEqual(['f5', 'f4', 'f3', 'f2']);
+    await manager.loadMoreFiles();
+    expect(ids(manager)).toEqual(['f5', 'f4', 'f3', 'f2', 'f1']);
+    expect(manager.getSnapshot().hasMoreFiles).toBe(false);
+    expect(backend.listFilesPage.mock.calls.map(([o]) => o?.cursor)).toEqual([undefined, 'c1', 'c2']);
+    await manager.loadMoreFiles(); // nothing left: no request
+    expect(backend.listFilesPage).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not start a second load while one is in flight', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { manager, backend } = paged(async (o) => (o.cursor ? (await gate, threePages.c1!) : threePages.first!));
+    await manager.refreshFiles();
+    const a = manager.loadMoreFiles();
+    const b = manager.loadMoreFiles();
+    expect(manager.getSnapshot().loadingMoreFiles).toBe(true);
+    release();
+    await Promise.all([a, b]);
+    expect(backend.listFilesPage).toHaveBeenCalledTimes(2);
+    expect(ids(manager)).toEqual(['f5', 'f4', 'f3', 'f2']);
+    expect(manager.getSnapshot().loadingMoreFiles).toBe(false);
+  });
+
+  it('keeps the list and the cursor when loading more fails, so it can be retried', async () => {
+    let fail = true;
+    const { manager } = paged(async (o) => {
+      if (o.cursor && fail) throw new Error('offline');
+      return serve(o);
+    });
+    await manager.refreshFiles();
+    await manager.loadMoreFiles();
+    expect(ids(manager)).toEqual(['f5', 'f4']);
+    expect(manager.getSnapshot()).toMatchObject({ hasMoreFiles: true, loadingMoreFiles: false });
+    fail = false;
+    await manager.loadMoreFiles();
+    expect(ids(manager)).toEqual(['f5', 'f4', 'f3', 'f2']);
+  });
+
+  describe('live updates (the newest page pushed over SSE)', () => {
+    async function loaded() {
+      const ctx = paged(serve);
+      await ctx.manager.refreshFiles();
+      await ctx.manager.loadMoreFiles();
+      return ctx.manager; // f5 f4 | f3 f2 loaded, c2 still to fetch
+    }
+
+    it('updates the newest page in place and keeps the older pages already loaded', async () => {
+      const m = await loaded();
+      m.applyFirstPage({ files: [dto(6), dto(5, { status: 'failed' }), dto(4)], nextCursor: 'x' });
+      expect(ids(m)).toEqual(['f6', 'f5', 'f4', 'f3', 'f2']);
+      expect(m.getSnapshot().files[1]!.status).toBe('failed');
+      expect(m.getSnapshot().hasMoreFiles).toBe(true);
+      await m.loadMoreFiles(); // still continues from where the older pages ended, not from the live page
+      expect(ids(m)).toEqual(['f6', 'f5', 'f4', 'f3', 'f2', 'f1']);
+    });
+
+    it('drops a newer file that is gone from the page (for example an aborted upload)', async () => {
+      const m = await loaded();
+      m.applyFirstPage({ files: [dto(4)], nextCursor: 'x' });
+      expect(ids(m)).toEqual(['f4', 'f3', 'f2']);
+    });
+
+    it('treats a page with no cursor as the complete list', async () => {
+      const m = await loaded();
+      m.applyFirstPage({ files: [dto(5)] });
+      expect(ids(m)).toEqual(['f5']);
+      expect(m.getSnapshot().hasMoreFiles).toBe(false);
+    });
+
+    it('adopts the live cursor when no older page has been loaded yet', () => {
+      const { manager, backend } = paged(serve);
+      manager.applyFirstPage({ files: [dto(5), dto(4)], nextCursor: 'live-1' });
+      expect(manager.getSnapshot().hasMoreFiles).toBe(true);
+      return manager.loadMoreFiles().then(() => expect(backend.listFilesPage.mock.calls[0]![0]).toMatchObject({ cursor: 'live-1' }));
+    });
   });
 });
