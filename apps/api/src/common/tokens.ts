@@ -5,3 +5,5 @@ export const S3 = Symbol('S3');
 export const S3_PRESIGNER = Symbol('S3_PRESIGNER');
 export const FILES = Symbol('FILES');
 export const AUTHENTICATOR = Symbol('AUTHENTICATOR');
+/** The JsonLogger every part of the API writes through. */
+export const LOGGER = Symbol('LOGGER');

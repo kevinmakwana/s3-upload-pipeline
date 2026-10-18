@@ -160,6 +160,7 @@ Environment variables for the API (the quick start writes `.env.local` for you; 
 | `RATE_LIMIT_IP_PER_MINUTE` | 1200 | Requests per client address, counted before authentication |
 | `RATE_LIMIT_USER_PER_MINUTE` | 1500 | Requests per credential (bearer token or demo user id). Presigning one URL per part is most of this |
 | `RATE_LIMIT_INIT_PER_MINUTE` | 30 | Uploads one credential may start per minute |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` or `silent` |
 | `TRUST_PROXY_HOPS` | 0 | Proxies in front of the API whose `X-Forwarded-For` to trust. The AWS stack sets `1` for its load balancer |
 | `ALLOW_INSECURE_DEMO_AUTH` | unset | Set to `true` to let `AUTH_MODE=header` start with `NODE_ENV=production`. Do not |
 
@@ -252,6 +253,15 @@ Rough figures for `us-east-1`; prices change, so check the AWS pricing pages bef
 - **Per upload it is pennies**: S3 storage (about $0.023 per GB-month) and request charges for a few hundred parts, a Lambda run of a minute or two on 1.5 GB ARM, and on-demand DynamoDB and SQS at trivial volume. Data transferred into S3 is free.
 - **Abandoned uploads cost money until aborted.** The bucket's lifecycle rule aborts incomplete multipart uploads after 2 days, which is also how long a paused upload can be resumed.
 - Three CloudWatch alarms (DLQ not empty, queue backlog over an hour, worker errors) cost a few cents a month.
+
+### Logging
+
+The API writes one JSON object per line to stdout (the same shape as the worker's logs), so CloudWatch Logs Insights can filter on fields. Nest's own messages use the same format.
+
+- **One `request` line per request**, written when it ends: `requestId`, `method`, `path`, `status`, `durationMs`, `userId` (null when not authenticated), `ip`, and `aborted` if the client went away first. Level is `info` for success, `warn` for 4xx and `error` for 5xx. Rejected and rate-limited requests are logged too.
+- **`unhandled error` lines** for any 5xx, with the error's name, message and stack and the same `requestId`. The client still gets only a generic `500`.
+- **Request ids.** Every response carries `x-request-id` (readable from the browser app through CORS). A sensible incoming `x-request-id` is kept so a call can be followed across systems; anything else is replaced. To find what went wrong for a user, ask for the id from the failed response and search for it.
+- **Never logged:** query strings (they carry cursors), headers, tokens, request bodies and file names. Successful health checks and CORS preflights are not logged at all.
 
 ## Design notes and limits
 

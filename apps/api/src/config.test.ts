@@ -63,3 +63,14 @@ describe('limits configuration', () => {
     expect(() => loadConfig({ ...base, [name]: value })).toThrow(new RegExp(name));
   });
 });
+
+describe('log level', () => {
+  it('defaults to info and accepts the known levels', () => {
+    expect(loadConfig({ ...base }).logLevel).toBe('info');
+    for (const level of ['debug', 'info', 'warn', 'error', 'silent']) expect(loadConfig({ ...base, LOG_LEVEL: level }).logLevel).toBe(level);
+  });
+
+  it('rejects anything else instead of silently logging nothing (or everything)', () => {
+    expect(() => loadConfig({ ...base, LOG_LEVEL: 'verbose' })).toThrow(/LOG_LEVEL/);
+  });
+});

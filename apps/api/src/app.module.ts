@@ -1,12 +1,14 @@
 import { Module, type DynamicModule, type ExecutionContext } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { createRemoteJWKSet } from 'jose';
 import { createDocClient, createS3Client, DynamoFileStore } from '@s3up/data';
 import { AuthGuard } from './auth/auth.guard';
 import { HeaderAuthenticator, JwtAuthenticator } from './auth/authenticator';
+import { LoggingExceptionFilter } from './common/logging.filter';
+import { JsonLogger } from './common/logger';
 import { RetryAfterThrottlerGuard, callerKey } from './common/throttle';
-import { AUTHENTICATOR, CONFIG, FILES, S3, S3_PRESIGNER } from './common/tokens';
+import { AUTHENTICATOR, CONFIG, FILES, LOGGER, S3, S3_PRESIGNER } from './common/tokens';
 import type { AppConfig } from './config';
 import { FilesController } from './files/files.controller';
 import { FilesService } from './files/files.service';
@@ -38,6 +40,8 @@ export class AppModule {
       controllers: [UploadsController, FilesController, HealthController],
       providers: [
         { provide: CONFIG, useValue: config },
+        { provide: LOGGER, useFactory: () => new JsonLogger(config.logLevel) },
+        { provide: APP_FILTER, useClass: LoggingExceptionFilter },
         { provide: S3, useFactory: () => createS3Client() },
         {
           provide: S3_PRESIGNER,
