@@ -244,7 +244,9 @@ export class UploadPipelineStack extends Stack {
         }),
         new iam.PolicyStatement({
           sid: 'VerifyAndDiscardObjects',
-          actions: ['s3:GetObject', 's3:DeleteObject', 's3:DeleteObjectVersion'],
+          // GetObjectVersion: downloads are pinned to the verified version. The delete actions
+          // cover discarding a failed upload and deleting a finished file (every version of it).
+          actions: ['s3:GetObject', 's3:GetObjectVersion', 's3:DeleteObject', 's3:DeleteObjectVersion'],
           resources: [bucket.arnForObjects('uploads/*')],
         }),
         new iam.PolicyStatement({
@@ -253,8 +255,21 @@ export class UploadPipelineStack extends Stack {
           resources: [bucket.arnForObjects('thumbnails/*')],
         }),
         new iam.PolicyStatement({
+          sid: 'DiscardThumbnails',
+          actions: ['s3:DeleteObject', 's3:DeleteObjectVersion'],
+          resources: [bucket.arnForObjects('thumbnails/*')],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ListObjectVersions',
+          // Finding every version of a file's objects before deleting them. Bucket-level, so the
+          // prefixes it may list are limited by condition.
+          actions: ['s3:ListBucketVersions'],
+          resources: [bucket.bucketArn],
+          conditions: { StringLike: { 's3:prefix': ['uploads/*', 'thumbnails/*'] } },
+        }),
+        new iam.PolicyStatement({
           sid: 'FileRecords',
-          actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:Query'],
+          actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query'],
           resources: [table.tableArn, `${table.tableArn}/index/byUser`],
         }),
       ],

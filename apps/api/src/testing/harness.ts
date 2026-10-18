@@ -16,6 +16,7 @@ export const testConfig: AppConfig = {
   preferredPartSize: 5 * MiB,
   presignExpiresSeconds: 900,
   thumbnailUrlExpiresSeconds: 300,
+  downloadUrlExpiresSeconds: 300,
   pendingTtlSeconds: 3 * 24 * 3600,
   ssePollMs: 20,
 };

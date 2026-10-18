@@ -4,7 +4,9 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   HeadObjectCommand,
+  ListObjectVersionsCommand,
   ListPartsCommand,
 } from '@aws-sdk/client-s3';
 
@@ -19,6 +21,11 @@ export class FakeS3 {
   objects = new Map<string, { size: number }>();
   commands: unknown[] = [];
   deleted: unknown[] = [];
+  /** Every stored version and delete marker, which is what a versioned bucket really keeps. */
+  versions: { Key: string; VersionId: string; marker: boolean }[] = [];
+  versionPageSize = 1000;
+  /** Keys that DeleteObjects reports as failed. */
+  failDeleteKeys = new Set<string>();
   /** Tamper with the ETag S3 returns from CompleteMultipartUpload. */
   corruptEtag = false;
   listPageSize = 1000;
@@ -49,6 +56,7 @@ export class FakeS3 {
       const etag = createHash('md5').update(Buffer.concat(ordered.map((p) => Buffer.from(p.etag, 'hex')))).digest('hex');
       const sha = createHash('sha256').update(Buffer.concat(ordered.map((p) => Buffer.from(p.sha256, 'base64')))).digest('base64');
       this.objects.set(up.key, { size: ordered.reduce((n, p) => n + p.size, 0) });
+      this.versions.push({ Key: up.key, VersionId: 'v1', marker: false });
       this.uploads.delete(command.input.UploadId!);
       return { ETag: `"${this.corruptEtag ? 'f'.repeat(32) : etag}-${ordered.length}"`, ChecksumSHA256: `${sha}-${ordered.length}`, VersionId: 'v1' };
     }
@@ -67,7 +75,47 @@ export class FakeS3 {
       this.objects.delete(command.input.Key!);
       return {};
     }
+    if (command instanceof ListObjectVersionsCommand) {
+      // Markers are positions (key, then version id), as in S3, so deleting earlier entries between pages is safe.
+      const order = (a: { Key: string; VersionId: string }, b: { Key: string; VersionId: string }) => a.Key.localeCompare(b.Key) || a.VersionId.localeCompare(b.VersionId);
+      const { KeyMarker, VersionIdMarker } = command.input;
+      const after = (v: { Key: string; VersionId: string }) => !KeyMarker || order(v, { Key: KeyMarker, VersionId: VersionIdMarker ?? '' }) > 0;
+      const matching = this.versions.filter((v) => v.Key.startsWith(command.input.Prefix ?? '') && after(v)).sort(order);
+      const page = matching.slice(0, this.versionPageSize);
+      const truncated = matching.length > page.length;
+      return {
+        Versions: page.filter((v) => !v.marker).map(({ Key, VersionId }) => ({ Key, VersionId })),
+        DeleteMarkers: page.filter((v) => v.marker).map(({ Key, VersionId }) => ({ Key, VersionId })),
+        IsTruncated: truncated,
+        NextKeyMarker: truncated ? page.at(-1)!.Key : undefined,
+        NextVersionIdMarker: truncated ? page.at(-1)!.VersionId : undefined,
+      };
+    }
+    if (command instanceof DeleteObjectsCommand) {
+      const Errors: { Key: string; VersionId?: string; Code: string }[] = [];
+      for (const { Key, VersionId } of command.input.Delete!.Objects!) {
+        if (this.failDeleteKeys.has(Key!)) {
+          Errors.push({ Key: Key!, VersionId, Code: 'AccessDenied' });
+          continue;
+        }
+        this.versions = this.versions.filter((v) => !(v.Key === Key && v.VersionId === VersionId));
+        if (!this.versions.some((v) => v.Key === Key && !v.marker)) this.objects.delete(Key!);
+      }
+      this.deleted.push(command.input);
+      return Errors.length ? { Errors } : {};
+    }
     throw new Error(`FakeS3: unsupported command ${(command as object).constructor.name}`);
+  }
+
+  /** Puts a stored version (or a delete marker) straight into the bucket. */
+  addVersion(key: string, versionId: string, marker = false) {
+    this.versions.push({ Key: key, VersionId: versionId, marker });
+    if (!marker) this.objects.set(key, { size: 1 });
+  }
+
+  /** Version ids currently stored for exactly this key. */
+  versionsOf(key: string): string[] {
+    return this.versions.filter((v) => v.Key === key).map((v) => v.VersionId).sort();
   }
 
   /** Simulates a browser PUT of a part landing in S3. */

@@ -264,6 +264,28 @@ describe('UploadPipelineStack', () => {
       for (const s of s3Statements) expect(JSON.stringify(s.Resource)).toMatch(/uploads\/\*|thumbnails\/\*/);
     });
 
+    it('lets the API download a stored version and delete a finished file, and no more', () => {
+      const sid = (name: string) => statements.find((s) => s.Sid === name)!;
+      const resourceText = (name: string) => JSON.stringify(sid(name).Resource);
+
+      // Download is pinned to the verified version; deleting removes every version of the object.
+      expect(actionsOf(sid('VerifyAndDiscardObjects')).sort()).toEqual(['s3:DeleteObject', 's3:DeleteObjectVersion', 's3:GetObject', 's3:GetObjectVersion']);
+      expect(resourceText('VerifyAndDiscardObjects')).toContain('uploads/*');
+      expect(resourceText('VerifyAndDiscardObjects')).not.toContain('thumbnails');
+
+      // Thumbnails are deleted along with their file, and only deleted.
+      expect(actionsOf(sid('DiscardThumbnails')).sort()).toEqual(['s3:DeleteObject', 's3:DeleteObjectVersion']);
+      expect(resourceText('DiscardThumbnails')).toContain('thumbnails/*');
+
+      // Listing versions is a bucket-level action, so it is limited to the two prefixes by condition.
+      const list = sid('ListObjectVersions');
+      expect(actionsOf(list)).toEqual(['s3:ListBucketVersions']);
+      expect(list.Condition).toEqual({ StringLike: { 's3:prefix': ['uploads/*', 'thumbnails/*'] } });
+      expect(JSON.stringify(list.Resource)).not.toContain('/*');
+
+      expect(actionsOf(sid('FileRecords')).sort()).toEqual(['dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:UpdateItem']);
+    });
+
     it('limits the worker to reading uploads, writing thumbnails and two DynamoDB actions', () => {
       const flat = JSON.stringify(statements);
       expect(flat).toContain('dynamodb:GetItem');

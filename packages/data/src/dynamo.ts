@@ -1,5 +1,5 @@
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
-import { GetCommand, PutCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient, type QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
+import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient, type QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { ProcessingResult } from '@s3up/core';
 import type { FileRecord } from './records';
 import { clampLimit, decodeCursor, encodeCursor } from './cursor';
@@ -110,6 +110,21 @@ export class DynamoFileStore implements FileStore {
         ExpressionAttributeValues: { ...values, ':aborted': 'aborted' },
       }),
     );
+  }
+
+  async remove(fileId: string): Promise<boolean> {
+    const res = await conditional(() =>
+      this.doc.send(
+        new DeleteCommand({
+          TableName: this.tableName,
+          Key: { pk: fileKey(fileId) },
+          ConditionExpression: '#s IN (:ready, :failed)',
+          ExpressionAttributeNames: { '#s': 'status' },
+          ExpressionAttributeValues: { ':ready': 'ready', ':failed': 'failed' },
+        }),
+      ),
+    );
+    return res !== undefined;
   }
 
   async markAborted(fileId: string, at: string): Promise<boolean> {

@@ -156,6 +156,106 @@ describe('HTTP API', () => {
     });
   });
 
+  describe('download and delete a finished file', () => {
+    const KEY = (id: string) => `uploads/alice/${id}/Quarterly "report".pdf`;
+    const THUMB = (id: string) => `thumbnails/alice/${id}.jpg`;
+    async function finished(status: FileRecord['status'] = 'ready', userId = 'alice') {
+      const id = `file-${Math.random().toString(36).slice(2, 10)}`;
+      const record: FileRecord = {
+        id, userId, fileName: 'Quarterly "report".pdf', contentType: 'application/pdf', size: 10, status, partSize: 5 * MiB, partCount: 1,
+        s3Key: KEY(id), s3UploadId: 'u', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', versionId: 'v-main',
+        ...(status === 'ready' ? { result: { sha256: 'ab', size: 10, thumbnailKey: THUMB(id) } } : {}),
+      };
+      await files.create(record);
+      s3.addVersion(KEY(id), 'v-main');
+      return record;
+    }
+    const as = (user: string) => ({ get: (p: string) => request(app.getHttpServer()).get(p).set('x-user-id', user), del: (p: string) => request(app.getHttpServer()).delete(p).set('x-user-id', user) });
+
+    it('hands out a short-lived link for the stored version that forces a download', async () => {
+      const r = await finished();
+      const res = await as('alice').get(`/files/${r.id}/download`).expect(200);
+      const url = new URL(res.body.url);
+      expect(decodeURIComponent(url.pathname)).toContain(KEY(r.id));
+      expect(url.searchParams.get('versionId')).toBe('v-main');
+      expect(url.searchParams.get('X-Amz-Expires')).toBe('300');
+      expect(url.searchParams.get('response-content-disposition')).toMatch(/^attachment; filename="Quarterly _report_\.pdf"; filename\*=UTF-8''/);
+      expect(url.searchParams.get('response-content-type')).toBe('application/pdf');
+      expect(Date.parse(res.body.expiresAt)).toBeGreaterThan(Date.now());
+    });
+
+    it.each([['uploading'], ['uploaded'], ['processing'], ['failed']] as const)('refuses to hand out a download for a %s file', async (status) => {
+      const r = await finished(status);
+      await as('alice').get(`/files/${r.id}/download`).expect(409);
+    });
+
+    it('treats another user\'s file, or an unknown one, as not found', async () => {
+      const r = await finished();
+      await as('mallory').get(`/files/${r.id}/download`).expect(404);
+      await as('alice').get('/files/nope/download').expect(404);
+    });
+
+    it('deletes every version, delete marker and thumbnail, then the record, but nothing else', async () => {
+      const r = await finished();
+      s3.addVersion(KEY(r.id), 'v-old');
+      s3.addVersion(KEY(r.id), 'v-marker', true);
+      s3.addVersion(THUMB(r.id), 't1');
+      s3.addVersion(THUMB(r.id), 't2');
+      const sibling = `${KEY(r.id)}.bak`; // shares the key as a prefix, must survive
+      s3.addVersion(sibling, 's1');
+      s3.versionPageSize = 2; // force the listing to take several pages
+
+      await as('alice').del(`/files/${r.id}`).expect(204);
+
+      expect(s3.versionsOf(KEY(r.id))).toEqual([]);
+      expect(s3.versionsOf(THUMB(r.id))).toEqual([]);
+      expect(s3.versionsOf(sibling)).toEqual(['s1']);
+      expect(await files.get(r.id)).toBeUndefined();
+      expect((await as('alice').get('/files')).body.files).toEqual([]);
+      await as('alice').get(`/files/${r.id}`).expect(404);
+      await as('alice').del(`/files/${r.id}`).expect(404); // already gone
+    });
+
+    it('deletes a failed file too (nothing to clean up but the record and object)', async () => {
+      const r = await finished('failed');
+      await as('alice').del(`/files/${r.id}`).expect(204);
+      expect(s3.versionsOf(KEY(r.id))).toEqual([]);
+      expect(await files.get(r.id)).toBeUndefined();
+    });
+
+    it.each([['uploading'], ['uploaded'], ['processing']] as const)('will not delete a %s file', async (status) => {
+      const r = await finished(status);
+      await as('alice').del(`/files/${r.id}`).expect(409);
+      expect(s3.versionsOf(KEY(r.id))).toEqual(['v-main']);
+      expect((await files.get(r.id))?.status).toBe(status);
+    });
+
+    it('still shows an aborted upload by id (status "aborted"), but offers it no download or delete', async () => {
+      const r = await finished('uploading');
+      await files.markAborted(r.id, new Date().toISOString());
+      expect((await as('alice').get(`/files/${r.id}`).expect(200)).body.status).toBe('aborted');
+      await as('alice').get(`/files/${r.id}/download`).expect(404);
+      await as('alice').del(`/files/${r.id}`).expect(404);
+    });
+
+    it('does not let another user delete a file', async () => {
+      const r = await finished();
+      await as('mallory').del(`/files/${r.id}`).expect(404);
+      expect(s3.versionsOf(KEY(r.id))).toEqual(['v-main']);
+      expect(await files.get(r.id)).toBeDefined();
+    });
+
+    it('keeps the record when S3 refuses to delete, so the request can be retried', async () => {
+      const r = await finished();
+      s3.failDeleteKeys.add(KEY(r.id));
+      await as('alice').del(`/files/${r.id}`).expect(500);
+      expect(await files.get(r.id)).toBeDefined();
+      s3.failDeleteKeys.clear();
+      await as('alice').del(`/files/${r.id}`).expect(204);
+      expect(await files.get(r.id)).toBeUndefined();
+    });
+  });
+
   it('streams file state over SSE and pushes updates', async () => {
     const http = request(app.getHttpServer());
     const init = await http.post('/uploads').set('x-user-id', 'alice').send(body).expect(201);

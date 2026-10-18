@@ -14,6 +14,8 @@ export interface AppConfig {
   preferredPartSize: number;
   presignExpiresSeconds: number;
   thumbnailUrlExpiresSeconds: number;
+  /** How long a download link stays valid. */
+  downloadUrlExpiresSeconds: number;
   /** How long an unfinished upload record lingers before DynamoDB TTL removes it. */
   pendingTtlSeconds: number;
   ssePollMs: number;
@@ -43,6 +45,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // Short-lived by design; clamped so a typo can't mint week-long URLs.
     presignExpiresSeconds: Math.min(3600, Math.max(60, int(env.PRESIGN_EXPIRES_SECONDS, 900))),
     thumbnailUrlExpiresSeconds: 300,
+    downloadUrlExpiresSeconds: Math.min(3600, Math.max(60, int(env.DOWNLOAD_URL_EXPIRES_SECONDS, 300))),
     pendingTtlSeconds: int(env.PENDING_TTL_SECONDS, 3 * 24 * 3600),
     ssePollMs: int(env.SSE_POLL_MS, 1000),
   };
