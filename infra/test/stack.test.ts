@@ -117,6 +117,10 @@ describe('UploadPipelineStack', () => {
       expect(env).not.toHaveProperty('ALLOW_INSECURE_DEMO_AUTH');
     });
 
+    it('trusts exactly one proxy (the load balancer), so rate limits see real client addresses', () => {
+      expect(apiEnvironment(synth({ deployApi: true }))).toMatchObject({ TRUST_PROXY_HOPS: '1' });
+    });
+
     it('refuses to deploy the API with no auth choice', () => {
       expect(() => synth({ deployApi: true, auth: undefined })).toThrow(/auth/i);
     });

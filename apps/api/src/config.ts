@@ -2,6 +2,24 @@ import { DEFAULT_ALLOWED_TYPES, DEFAULT_MAX_FILE_SIZE, DEFAULT_PART_SIZE, type V
 
 export type AuthConfig = { mode: 'header' } | { mode: 'jwt'; issuer: string; audience: string; jwksUrl: string };
 
+/** Per-user limits on what an account may hold. 0 turns a limit off. */
+export interface Quotas {
+  /** Uploads a user may have in progress at once. */
+  maxActiveUploads: number;
+  /** Bytes a user may hold: uploads in progress (their declared size) plus every finished file. */
+  maxStoredBytes: number;
+}
+
+/** Requests per minute. */
+export interface RateLimits {
+  /** Per client address, counted before authentication (stops floods of bogus credentials). */
+  ipPerMinute: number;
+  /** Per credential (bearer token or demo user id). Presigning one URL per part is the bulk of this. */
+  callerPerMinute: number;
+  /** Per credential, for starting uploads only. */
+  initPerMinute: number;
+}
+
 export interface AppConfig {
   port: number;
   auth: AuthConfig;
@@ -19,6 +37,10 @@ export interface AppConfig {
   /** How long an unfinished upload record lingers before DynamoDB TTL removes it. */
   pendingTtlSeconds: number;
   ssePollMs: number;
+  quotas: Quotas;
+  rateLimits: RateLimits;
+  /** Proxies in front of the API whose X-Forwarded-For to trust (0 when clients connect directly). */
+  trustProxyHops: number;
 }
 
 const int = (v: string | undefined, fallback: number) => {
@@ -32,6 +54,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     const v = env[name];
     if (!v) throw new Error(`Missing required environment variable ${name}`);
     return v;
+  };
+  /** A whole number of at least `min`, from the environment or the fallback. */
+  const whole = (name: string, fallback: number, min: number) => {
+    const raw = env[name];
+    const n = raw === undefined || raw === '' ? fallback : Number(raw);
+    if (!Number.isInteger(n) || n < min) throw new Error(`${name} must be a whole number of at least ${min}, got "${raw}"`);
+    return n;
   };
   return {
     port: int(env.PORT, 3001),
@@ -48,6 +77,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     downloadUrlExpiresSeconds: Math.min(3600, Math.max(60, int(env.DOWNLOAD_URL_EXPIRES_SECONDS, 300))),
     pendingTtlSeconds: int(env.PENDING_TTL_SECONDS, 3 * 24 * 3600),
     ssePollMs: int(env.SSE_POLL_MS, 1000),
+    quotas: {
+      maxActiveUploads: whole('MAX_ACTIVE_UPLOADS_PER_USER', 10, 0),
+      maxStoredBytes: whole('MAX_STORED_BYTES_PER_USER', 100 * 1024 ** 3, 0),
+    },
+    rateLimits: {
+      ipPerMinute: whole('RATE_LIMIT_IP_PER_MINUTE', 1200, 1),
+      callerPerMinute: whole('RATE_LIMIT_USER_PER_MINUTE', 1500, 1),
+      initPerMinute: whole('RATE_LIMIT_INIT_PER_MINUTE', 30, 1),
+    },
+    trustProxyHops: whole('TRUST_PROXY_HOPS', 0, 0),
   };
 }
 

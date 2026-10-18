@@ -17,6 +17,10 @@ export const testConfig: AppConfig = {
   presignExpiresSeconds: 900,
   thumbnailUrlExpiresSeconds: 300,
   downloadUrlExpiresSeconds: 300,
+  quotas: { maxActiveUploads: 0, maxStoredBytes: 0 },
+  // Out of the way of ordinary tests; the limit tests set their own.
+  rateLimits: { ipPerMinute: 100_000, callerPerMinute: 100_000, initPerMinute: 100_000 },
+  trustProxyHops: 0,
   pendingTtlSeconds: 3 * 24 * 3600,
   ssePollMs: 20,
 };

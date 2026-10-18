@@ -1,9 +1,11 @@
-import { Module, type DynamicModule } from '@nestjs/common';
+import { Module, type DynamicModule, type ExecutionContext } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { createRemoteJWKSet } from 'jose';
 import { createDocClient, createS3Client, DynamoFileStore } from '@s3up/data';
 import { AuthGuard } from './auth/auth.guard';
 import { HeaderAuthenticator, JwtAuthenticator } from './auth/authenticator';
+import { RetryAfterThrottlerGuard, callerKey } from './common/throttle';
 import { AUTHENTICATOR, CONFIG, FILES, S3, S3_PRESIGNER } from './common/tokens';
 import type { AppConfig } from './config';
 import { FilesController } from './files/files.controller';
@@ -15,8 +17,24 @@ import { UploadsService } from './uploads/uploads.service';
 @Module({})
 export class AppModule {
   static register(config: AppConfig): DynamicModule {
+    const { rateLimits } = config;
+    const minute = 60_000;
+    // Anything but starting an upload is skipped by the 'init' throttler.
+    const notInit = (ctx: ExecutionContext) => ctx.getClass() !== UploadsController || ctx.getHandler() !== UploadsController.prototype.init;
     return {
       module: AppModule,
+      imports: [
+        ThrottlerModule.forRoot({
+          errorMessage: 'Too many requests. Slow down and try again shortly.',
+          // Load-balancer health checks and monitors must never be refused.
+          skipIf: (ctx) => ctx.getClass() === HealthController,
+          throttlers: [
+            { name: 'ip', ttl: minute, limit: rateLimits.ipPerMinute },
+            { name: 'caller', ttl: minute, limit: rateLimits.callerPerMinute, getTracker: callerKey },
+            { name: 'init', ttl: minute, limit: rateLimits.initPerMinute, getTracker: callerKey, skipIf: notInit },
+          ],
+        }),
+      ],
       controllers: [UploadsController, FilesController, HealthController],
       providers: [
         { provide: CONFIG, useValue: config },
@@ -33,7 +51,9 @@ export class AppModule {
               ? new JwtAuthenticator(createRemoteJWKSet(new URL(config.auth.jwksUrl)), config.auth)
               : new HeaderAuthenticator(),
         },
-        // Authenticate every route by default; opt out explicitly with @Public().
+        // Guards run in this order: rate limits first, so a flood of bad credentials is turned away
+        // before any token is verified; then authenticate every route (opt out with @Public()).
+        { provide: APP_GUARD, useClass: RetryAfterThrottlerGuard },
         { provide: APP_GUARD, useClass: AuthGuard },
         UploadsService,
         FilesService,
