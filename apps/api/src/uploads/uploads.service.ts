@@ -17,6 +17,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  PayloadTooLargeException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import {
@@ -36,6 +37,7 @@ import type { AppConfig } from '../config';
 import { CONFIG, FILES, S3, S3_PRESIGNER } from '../common/tokens';
 import { expectedCompositeSha256, expectedMultipartEtag, normalizeEtag, type PartDigest } from './integrity';
 
+const gib = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(bytes >= 1024 ** 3 ? 1 : 2)} GiB`;
 const SHA256_B64 = /^[A-Za-z0-9+/]{43}=$/;
 
 @Injectable()
@@ -60,6 +62,8 @@ export class UploadsService {
       if (err instanceof PlanError) throw new BadRequestException(err.message);
       throw err;
     }
+
+    await this.enforceQuotas(userId, req.fileSize);
 
     const id = randomUUID();
     const key = buildObjectKey(userId, id, req.fileName);
@@ -93,6 +97,27 @@ export class UploadsService {
     };
     await this.files.create(record);
     return toDto(record);
+  }
+
+  /**
+   * Refuses to open another upload when the user is at their limits. The check and the create are
+   * not atomic, so two requests racing can overshoot by a little: these are cost guards, not a ledger.
+   */
+  private async enforceQuotas(userId: string, fileSize: number): Promise<void> {
+    const { maxActiveUploads, maxStoredBytes } = this.config.quotas;
+    if (!maxActiveUploads && !maxStoredBytes) return;
+    const usage = await this.files.usage(userId);
+    if (maxActiveUploads && usage.activeUploads >= maxActiveUploads) {
+      const n = usage.activeUploads;
+      throw new ConflictException(
+        `You already have ${n} upload${n === 1 ? '' : 's'} in progress and the limit is ${maxActiveUploads}. Finish or cancel one first.`,
+      );
+    }
+    if (maxStoredBytes && usage.storedBytes + fileSize > maxStoredBytes) {
+      throw new PayloadTooLargeException(
+        `Storage quota exceeded: you are using ${gib(usage.storedBytes)} of ${gib(maxStoredBytes)} and this file needs ${gib(fileSize)}. Delete some files first.`,
+      );
+    }
   }
 
   /** What S3 holds for this upload: the reconciliation input for resume. */

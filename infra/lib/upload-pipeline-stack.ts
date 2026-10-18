@@ -307,6 +307,9 @@ export class UploadPipelineStack extends Stack {
             PORT: '3001',
             // Don't rely on the platform injecting it: signing and the SDK need the right region.
             AWS_REGION: Aws.REGION,
+            // The ALB is the one proxy in front of the API: trust its X-Forwarded-For, and no more,
+            // so per-address rate limits see real client addresses that clients cannot forge.
+            TRUST_PROXY_HOPS: '1',
             ...authEnvironment,
           },
           logDriver: ecs.LogDrivers.awsLogs({

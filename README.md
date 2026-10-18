@@ -82,6 +82,8 @@ sequenceDiagram
 - Presigned URLs are scoped to **one key, one upload id and one part number**, expire in 15 minutes (configurable, capped at 1 hour), and sign the part's `Content-Length` and `x-amz-checksum-sha256`.
 - Every object lives under its owner's prefix, `uploads/<user>/<file id>/…`. File names are sanitised so they cannot escape it, and every API call checks ownership (someone else's upload looks exactly like a missing one).
 - The bucket blocks all public access, enforces TLS, encrypts at rest and is versioned. CORS allows only the configured origins.
+- Per-user quotas (uploads in progress, bytes held) are checked before anything is created in S3, and requests are rate limited per client address and per credential; over the limit is a `429` with `Retry-After`. The health check is never limited. Counters are in memory, so with several API tasks each enforces its own share. The quota check and the create are not atomic, so racing requests can overshoot slightly: these guard cost, they are not a ledger.
+- Responses carry the standard hardening headers (Helmet).
 - Allowed types and a maximum size are validated by the API before anything is created, and again by the worker, which rejects content that does not match its declared type (a ZIP renamed `.png` ends up `failed`).
 - IAM is least privilege and checked by tests: the worker may read `uploads/*`, write `thumbnails/*` and use two DynamoDB actions; the API gets a separate managed policy with only what it calls (including deleting versions under `uploads/*` and `thumbnails/*`, and listing versions only for those two prefixes).
 
@@ -153,6 +155,12 @@ Environment variables for the API (the quick start writes `.env.local` for you; 
 | `AUTH_MODE` | `header` | `jwt` to verify bearer tokens, `header` for the insecure local demo (see [Authentication](#authentication)) |
 | `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_JWKS_URL` | required with `AUTH_MODE=jwt` | Expected `iss` and `aud`, and the https URL of the issuer's JWKS |
 | `DOWNLOAD_URL_EXPIRES_SECONDS` | 300 | Lifetime of download links (clamped to 60..3600) |
+| `MAX_ACTIVE_UPLOADS_PER_USER` | 10 | Uploads one user may have in progress; more is a `409`. `0` turns it off |
+| `MAX_STORED_BYTES_PER_USER` | 100 GiB | Bytes one user may hold (uploads in progress plus finished files); a file that would go over is a `413`. `0` turns it off |
+| `RATE_LIMIT_IP_PER_MINUTE` | 1200 | Requests per client address, counted before authentication |
+| `RATE_LIMIT_USER_PER_MINUTE` | 1500 | Requests per credential (bearer token or demo user id). Presigning one URL per part is most of this |
+| `RATE_LIMIT_INIT_PER_MINUTE` | 30 | Uploads one credential may start per minute |
+| `TRUST_PROXY_HOPS` | 0 | Proxies in front of the API whose `X-Forwarded-For` to trust. The AWS stack sets `1` for its load balancer |
 | `ALLOW_INSECURE_DEMO_AUTH` | unset | Set to `true` to let `AUTH_MODE=header` start with `NODE_ENV=production`. Do not |
 
 Web app build-time variables: `VITE_API_URL` (API base URL) and `VITE_AUTH_MODE` (`demo`, the default, or `bearer`).

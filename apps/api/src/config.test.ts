@@ -31,3 +31,35 @@ describe('auth configuration', () => {
     expect(() => loadConfig({ ...base, AUTH_MODE: 'jtw' })).toThrow(/AUTH_MODE/);
   });
 });
+
+describe('limits configuration', () => {
+  it('has sensible defaults', () => {
+    const c = loadConfig({ ...base });
+    expect(c.quotas).toEqual({ maxActiveUploads: 10, maxStoredBytes: 100 * 1024 ** 3 });
+    expect(c.rateLimits).toEqual({ ipPerMinute: 1200, callerPerMinute: 1500, initPerMinute: 30 });
+    expect(c.trustProxyHops).toBe(0);
+  });
+
+  it('reads overrides, and 0 turns a quota off', () => {
+    const c = loadConfig({
+      ...base, MAX_ACTIVE_UPLOADS_PER_USER: '0', MAX_STORED_BYTES_PER_USER: '5000', RATE_LIMIT_IP_PER_MINUTE: '50',
+      RATE_LIMIT_USER_PER_MINUTE: '60', RATE_LIMIT_INIT_PER_MINUTE: '3', TRUST_PROXY_HOPS: '1',
+    });
+    expect(c.quotas).toEqual({ maxActiveUploads: 0, maxStoredBytes: 5000 });
+    expect(c.rateLimits).toEqual({ ipPerMinute: 50, callerPerMinute: 60, initPerMinute: 3 });
+    expect(c.trustProxyHops).toBe(1);
+  });
+
+  it.each([
+    ['MAX_ACTIVE_UPLOADS_PER_USER', '-1'],
+    ['MAX_ACTIVE_UPLOADS_PER_USER', '1.5'],
+    ['MAX_STORED_BYTES_PER_USER', 'lots'],
+    ['RATE_LIMIT_IP_PER_MINUTE', '0'],
+    ['RATE_LIMIT_USER_PER_MINUTE', '0'],
+    ['RATE_LIMIT_INIT_PER_MINUTE', '-5'],
+    ['TRUST_PROXY_HOPS', '-1'],
+    ['TRUST_PROXY_HOPS', '1.5'],
+  ])('rejects %s=%s instead of silently misbehaving', (name, value) => {
+    expect(() => loadConfig({ ...base, [name]: value })).toThrow(new RegExp(name));
+  });
+});

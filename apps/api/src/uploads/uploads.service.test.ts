@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, GoneException, NotFoundException, UnprocessableEntityException } from '@nestjs/common';
+import { BadRequestException, ConflictException, GoneException, NotFoundException, PayloadTooLargeException, UnprocessableEntityException } from '@nestjs/common';
 import { CreateMultipartUploadCommand } from '@aws-sdk/client-s3';
 import { MiB, parseObjectKey, partRange } from '@s3up/core';
 import { makeService } from '../testing/harness';
@@ -44,6 +44,59 @@ describe('init', () => {
     const ctx = await startUpload(makeService(), 'alice', init({ fileName: '../../bob/movie.mp4' }));
     expect(ctx.record.s3Key.startsWith('uploads/alice/')).toBe(true);
     expect(ctx.record.s3Key.endsWith('/movie.mp4')).toBe(true);
+  });
+});
+
+describe('per-user quotas', () => {
+  const quotas = (over: Partial<{ maxActiveUploads: number; maxStoredBytes: number }> = {}) => makeService({ quotas: { maxActiveUploads: 0, maxStoredBytes: 0, ...over } });
+
+  it('stops a user starting more uploads than the limit, with a conflict that says what to do', async () => {
+    const ctx = quotas({ maxActiveUploads: 2 });
+    await ctx.service.init('alice', init());
+    const second = await ctx.service.init('alice', init());
+    const err = await ctx.service.init('alice', init()).catch((e) => e);
+    expect(err).toBeInstanceOf(ConflictException);
+    expect(err.message).toMatch(/2 uploads in progress.*limit is 2/i);
+    expect(ctx.s3.uploads.size).toBe(2); // nothing was opened in S3 for the refused request
+
+    await ctx.service.abort('alice', second.id); // cancelling frees a slot
+    await expect(ctx.service.init('alice', init())).resolves.toMatchObject({ status: 'uploading' });
+  });
+
+  it('counts only the caller\'s own uploads, and finished ones do not occupy a slot', async () => {
+    const ctx = quotas({ maxActiveUploads: 1 });
+    const done = await ctx.service.init('alice', init());
+    await ctx.files.markProcessing(done.id, new Date().toISOString());
+    await ctx.files.markReady(done.id, { sha256: 'a', size: done.size }, new Date().toISOString());
+    await expect(ctx.service.init('alice', init())).resolves.toBeDefined();
+    await expect(ctx.service.init('bob', init())).resolves.toBeDefined();
+    await expect(ctx.service.init('alice', init())).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('refuses a file that would take a user over their storage quota, and allows one that exactly fits', async () => {
+    const ctx = quotas({ maxStoredBytes: 30 * MiB });
+    await ctx.service.init('alice', init({ fileSize: 12 * MiB }));
+    await ctx.service.init('alice', init({ fileSize: 12 * MiB }));
+    const err = await ctx.service.init('alice', init({ fileSize: 7 * MiB })).catch((e) => e);
+    expect(err).toBeInstanceOf(PayloadTooLargeException);
+    expect(err.message).toMatch(/quota/i);
+    expect(ctx.s3.uploads.size).toBe(2);
+    await expect(ctx.service.init('alice', init({ fileSize: 6 * MiB }))).resolves.toBeDefined(); // 12 + 12 + 6 = 30
+    await expect(ctx.service.init('bob', init({ fileSize: 12 * MiB }))).resolves.toBeDefined();
+  });
+
+  it('gives the space back when an upload is cancelled or a file is deleted', async () => {
+    const ctx = quotas({ maxStoredBytes: 12 * MiB });
+    const first = await ctx.service.init('alice', init());
+    await expect(ctx.service.init('alice', init())).rejects.toBeInstanceOf(PayloadTooLargeException);
+    await ctx.service.abort('alice', first.id);
+    await expect(ctx.service.init('alice', init())).resolves.toBeDefined();
+  });
+
+  it('turns each limit off with 0', async () => {
+    const ctx = quotas();
+    for (let i = 0; i < 25; i++) await ctx.service.init('alice', init({ fileSize: 500 * MiB }));
+    expect(ctx.s3.uploads.size).toBe(25);
   });
 });
 

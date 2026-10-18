@@ -119,6 +119,51 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
       });
     });
 
+    describe('usage', () => {
+      it('counts uploads in progress and every byte a user still holds, per user, ignoring aborted ones', async () => {
+        const { store } = await make();
+        const user = `u${randomUUID().slice(0, 8)}`;
+        const mk = async (size: number, move?: (id: string) => Promise<unknown>, userId = user) => {
+          const r = newRecord({ userId, size });
+          await store.create(r);
+          await move?.(r.id);
+          return r;
+        };
+        await mk(100); // uploading
+        await mk(200); // uploading
+        await mk(400, (id) => store.markUploaded(id, { at: T1 }));
+        await mk(800, async (id) => { await store.markProcessing(id, T1); await store.markReady(id, { sha256: 'a', size: 800 }, T1); });
+        await mk(1600, async (id) => { await store.markProcessing(id, T1); await store.markFailed(id, 'bad', T1); });
+        await mk(3200, (id) => store.markAborted(id, T1)); // gives its storage back
+        await mk(6400, undefined, 'someone-else');
+        expect(await store.usage(user)).toEqual({ activeUploads: 2, storedBytes: 100 + 200 + 400 + 800 + 1600 });
+      });
+
+      it('is zero for a user with nothing', async () => {
+        const { store } = await make();
+        expect(await store.usage(`nobody-${randomUUID()}`)).toEqual({ activeUploads: 0, storedBytes: 0 });
+      });
+
+      it('frees the space when a finished file is removed', async () => {
+        const { store } = await make();
+        const r = newRecord({ size: 500 });
+        await store.create(r);
+        await store.markProcessing(r.id, T1);
+        await store.markReady(r.id, { sha256: 'a', size: 500 }, T1);
+        expect((await store.usage(r.userId)).storedBytes).toBeGreaterThanOrEqual(500);
+        const before = (await store.usage(r.userId)).storedBytes;
+        await store.remove(r.id);
+        expect((await store.usage(r.userId)).storedBytes).toBe(before - 500);
+      });
+
+      it('adds up across more records than one query page returns', async () => {
+        const { store } = await make();
+        const user = `u${randomUUID().slice(0, 8)}`;
+        for (let i = 0; i < 120; i++) await store.create(newRecord({ userId: user, size: 10, createdAt: `2026-03-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z` }));
+        expect(await store.usage(user)).toEqual({ activeUploads: 120, storedBytes: 1200 });
+      });
+    });
+
     describe('remove', () => {
       it.each([['ready'], ['failed']] as const)('deletes a %s record, and it disappears from get and list', async (finalStatus) => {
         const { store } = await make();

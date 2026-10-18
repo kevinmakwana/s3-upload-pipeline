@@ -1,7 +1,7 @@
 import type { ProcessingResult } from '@s3up/core';
 import type { FileRecord } from './records';
 import { clampLimit, decodeCursor, encodeCursor } from './cursor';
-import type { FileStore, LedgerOutcome, ListOptions, ProcessingLedger, RecordPage } from './store';
+import type { FileStore, LedgerOutcome, ListOptions, ProcessingLedger, RecordPage, UsageTotals } from './store';
 
 /** In-memory twin of the DynamoDB implementations; the same contract tests run against both. */
 export class MemoryFileStore implements FileStore {
@@ -14,6 +14,16 @@ export class MemoryFileStore implements FileStore {
   async get(fileId: string) {
     const r = this.records.get(fileId);
     return r && structuredClone(r);
+  }
+  async usage(userId: string): Promise<UsageTotals> {
+    let activeUploads = 0;
+    let storedBytes = 0;
+    for (const r of this.records.values()) {
+      if (r.userId !== userId || r.status === 'aborted') continue;
+      storedBytes += r.size;
+      if (r.status === 'uploading') activeUploads++;
+    }
+    return { activeUploads, storedBytes };
   }
   async listByUser(userId: string, options: ListOptions = {}): Promise<RecordPage> {
     const limit = clampLimit(options.limit);

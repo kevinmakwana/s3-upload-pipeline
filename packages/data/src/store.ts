@@ -23,9 +23,19 @@ export interface RecordPage {
   nextCursor?: string;
 }
 
+/** What a user currently holds, for enforcing quotas. */
+export interface UsageTotals {
+  /** Uploads still in progress. */
+  activeUploads: number;
+  /** Declared bytes of every record that still holds storage: in progress, uploaded, processing, ready or failed. */
+  storedBytes: number;
+}
+
 export interface FileStore {
   create(record: FileRecord): Promise<void>;
   get(fileId: string): Promise<FileRecord | undefined>;
+  /** Totals across all of the user's records (aborted uploads hold nothing). Reads the whole list, so call it sparingly. */
+  usage(userId: string): Promise<UsageTotals>;
   /** One page of the user's files, newest first. */
   listByUser(userId: string, options?: ListOptions): Promise<RecordPage>;
   /** uploading -> uploaded. If the worker already moved on, only the metadata is recorded. */

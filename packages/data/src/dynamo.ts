@@ -3,7 +3,7 @@ import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, typ
 import type { ProcessingResult } from '@s3up/core';
 import type { FileRecord } from './records';
 import { clampLimit, decodeCursor, encodeCursor } from './cursor';
-import type { FileStore, LedgerOutcome, ListOptions, ProcessingLedger, RecordPage } from './store';
+import type { FileStore, LedgerOutcome, ListOptions, ProcessingLedger, RecordPage, UsageTotals } from './store';
 
 export const USER_INDEX = 'byUser';
 const fileKey = (id: string) => `FILE#${id}`;
@@ -41,6 +41,33 @@ export class DynamoFileStore implements FileStore {
   async get(fileId: string): Promise<FileRecord | undefined> {
     const res = await this.doc.send(new GetCommand({ TableName: this.tableName, Key: { pk: fileKey(fileId) }, ConsistentRead: true }));
     return res.Item ? toRecord(res.Item) : undefined;
+  }
+
+  async usage(userId: string): Promise<UsageTotals> {
+    let activeUploads = 0;
+    let storedBytes = 0;
+    let startKey: Record<string, unknown> | undefined;
+    do {
+      const res: QueryCommandOutput = await this.doc.send(
+        new QueryCommand({
+          TableName: this.tableName,
+          IndexName: USER_INDEX,
+          KeyConditionExpression: 'gsiUser = :u',
+          ExpressionAttributeValues: { ':u': userId },
+          // "status" and "size" are reserved words; project only what is summed.
+          ProjectionExpression: '#status, #size',
+          ExpressionAttributeNames: { '#status': 'status', '#size': 'size' },
+          ExclusiveStartKey: startKey,
+        }),
+      );
+      for (const item of res.Items ?? []) {
+        if (item.status === 'aborted') continue;
+        storedBytes += Number(item.size) || 0;
+        if (item.status === 'uploading') activeUploads++;
+      }
+      startKey = res.LastEvaluatedKey;
+    } while (startKey);
+    return { activeUploads, storedBytes };
   }
 
   async listByUser(userId: string, options: ListOptions = {}): Promise<RecordPage> {
