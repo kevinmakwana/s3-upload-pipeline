@@ -1,3 +1,4 @@
+import { LOG_LEVELS, type LogLevelSetting } from './common/logger';
 import { DEFAULT_ALLOWED_TYPES, DEFAULT_MAX_FILE_SIZE, DEFAULT_PART_SIZE, type ValidationRules } from '@s3up/core';
 
 export type AuthConfig = { mode: 'header' } | { mode: 'jwt'; issuer: string; audience: string; jwksUrl: string };
@@ -37,6 +38,8 @@ export interface AppConfig {
   /** How long an unfinished upload record lingers before DynamoDB TTL removes it. */
   pendingTtlSeconds: number;
   ssePollMs: number;
+  /** Lowest level written to the log; `silent` writes nothing. */
+  logLevel: LogLevelSetting;
   quotas: Quotas;
   rateLimits: RateLimits;
   /** Proxies in front of the API whose X-Forwarded-For to trust (0 when clients connect directly). */
@@ -77,6 +80,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     downloadUrlExpiresSeconds: Math.min(3600, Math.max(60, int(env.DOWNLOAD_URL_EXPIRES_SECONDS, 300))),
     pendingTtlSeconds: int(env.PENDING_TTL_SECONDS, 3 * 24 * 3600),
     ssePollMs: int(env.SSE_POLL_MS, 1000),
+    logLevel: loadLogLevel(env.LOG_LEVEL),
     quotas: {
       maxActiveUploads: whole('MAX_ACTIVE_UPLOADS_PER_USER', 10, 0),
       maxStoredBytes: whole('MAX_STORED_BYTES_PER_USER', 100 * 1024 ** 3, 0),
@@ -112,4 +116,10 @@ function loadAuth(env: NodeJS.ProcessEnv, required: (name: string) => string): A
     );
   }
   return { mode: 'header' };
+}
+
+function loadLogLevel(value: string | undefined): LogLevelSetting {
+  if (value === undefined || value === '') return 'info';
+  if (!(LOG_LEVELS as readonly string[]).includes(value)) throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}, got "${value}"`);
+  return value as LogLevelSetting;
 }

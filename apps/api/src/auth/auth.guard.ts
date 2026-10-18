@@ -10,6 +10,8 @@ export const Public = () => SetMetadata(PUBLIC, true);
 export interface AuthedRequest {
   headers: RequestHeaders;
   userId?: string;
+  /** Set by the request logger; ties log lines to the id returned in `x-request-id`. */
+  requestId?: string;
 }
 
 /** Runs on every route: authenticates the caller and attaches `userId` to the request. */

@@ -23,6 +23,7 @@ export const testConfig: AppConfig = {
   trustProxyHops: 0,
   pendingTtlSeconds: 3 * 24 * 3600,
   ssePollMs: 20,
+  logLevel: 'silent',
 };
 
 /** A real S3 client with static credentials: signing is offline, so URLs can be inspected. */
