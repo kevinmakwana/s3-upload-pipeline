@@ -1,6 +1,6 @@
 import { HttpError } from './errors';
 import type { UploadApi } from './engine';
-import type { FileDto, FilePage, InitUploadRequest, InitUploadResponse, ListPartsResponse, PresignPartResponse } from './types';
+import type { DownloadUrlResponse, FileDto, FilePage, InitUploadRequest, InitUploadResponse, ListPartsResponse, PresignPartResponse } from './types';
 
 export type HeaderProvider = () => Record<string, string> | Promise<Record<string, string>>;
 
@@ -66,6 +66,16 @@ export class HttpUploadApi implements UploadApi {
 
   async getFile(fileId: string): Promise<FileDto> {
     return this.request('GET', `/files/${fileId}`);
+  }
+
+  /** A short-lived link that downloads the original file. Only ready files have one. */
+  getDownloadUrl(fileId: string): Promise<DownloadUrlResponse> {
+    return this.request('GET', `/files/${encodeURIComponent(fileId)}/download`);
+  }
+
+  /** Permanently deletes a ready or failed file and everything stored for it. */
+  async deleteFile(fileId: string): Promise<void> {
+    await this.request('DELETE', `/files/${encodeURIComponent(fileId)}`);
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {

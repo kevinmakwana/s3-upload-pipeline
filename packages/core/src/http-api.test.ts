@@ -51,6 +51,24 @@ describe('HttpUploadApi', () => {
     expect(calls[1]!.url).toBe('http://api/files');
   });
 
+  it('asks for a download link for a file', async () => {
+    const { fn, calls } = fakeFetch(() => json({ url: 'https://s3/x?sig', expiresAt: '2026-01-01T00:05:00.000Z' }));
+    const link = await new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn }).getDownloadUrl('f 1');
+    expect(link).toEqual({ url: 'https://s3/x?sig', expiresAt: '2026-01-01T00:05:00.000Z' });
+    expect(calls[0]!.url).toBe('http://api/files/f%201/download');
+    expect(calls[0]!.init.method).toBe('GET');
+  });
+
+  it('deletes a file with DELETE /files/:id and surfaces the server\'s reason when refused', async () => {
+    const { fn, calls } = fakeFetch(() => new Response(null, { status: 204 }));
+    const api = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn });
+    await expect(api.deleteFile('f1')).resolves.toBeUndefined();
+    expect(calls[0]).toMatchObject({ url: 'http://api/files/f1', init: { method: 'DELETE' } });
+
+    const refused = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fakeFetch(() => json({ message: 'File is processing; try again when processing has finished' }, 409)).fn });
+    await expect(refused.deleteFile('f1')).rejects.toMatchObject({ status: 409, message: expect.stringContaining('processing') });
+  });
+
   it('omits nextCursor on the last page, and listFiles returns just the first page of files', async () => {
     const { fn } = fakeFetch(() => json({ files: [{ id: 'f1' }] }));
     const api = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn });

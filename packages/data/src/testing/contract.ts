@@ -119,6 +119,37 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
       });
     });
 
+    describe('remove', () => {
+      it.each([['ready'], ['failed']] as const)('deletes a %s record, and it disappears from get and list', async (finalStatus) => {
+        const { store } = await make();
+        const r = newRecord();
+        await store.create(r);
+        await store.markProcessing(r.id, T1);
+        if (finalStatus === 'ready') await store.markReady(r.id, { sha256: 'a', size: 1 }, T1);
+        else await store.markFailed(r.id, 'bad', T1);
+        expect(await store.remove(r.id)).toBe(true);
+        expect(await store.get(r.id)).toBeUndefined();
+        expect((await store.listByUser(r.userId)).items.map((x) => x.id)).not.toContain(r.id);
+        expect(await store.remove(r.id)).toBe(false); // already gone
+      });
+
+      it.each([['uploading'], ['uploaded'], ['processing'], ['aborted']] as const)('refuses to delete a record that is %s', async (status) => {
+        const { store } = await make();
+        const r = newRecord();
+        await store.create(r);
+        if (status === 'uploaded') await store.markUploaded(r.id, { at: T1 });
+        if (status === 'processing') await store.markProcessing(r.id, T1);
+        if (status === 'aborted') await store.markAborted(r.id, T1);
+        expect(await store.remove(r.id)).toBe(false);
+        expect((await store.get(r.id))?.status).toBe(status);
+      });
+
+      it('returns false for a record that never existed', async () => {
+        const { store } = await make();
+        expect(await store.remove('missing')).toBe(false);
+      });
+    });
+
     it('refuses to overwrite an existing record', async () => {
       const { store } = await make();
       const r = newRecord();

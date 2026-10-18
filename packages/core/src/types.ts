@@ -40,6 +40,12 @@ export interface FilePage {
   nextCursor?: string;
 }
 
+/** A short-lived link that downloads the original file. */
+export interface DownloadUrlResponse {
+  url: string;
+  expiresAt: string;
+}
+
 export interface InitUploadRequest {
   fileName: string;
   fileSize: number;

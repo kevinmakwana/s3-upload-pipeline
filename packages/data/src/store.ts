@@ -38,6 +38,8 @@ export interface FileStore {
   markReady(fileId: string, result: ProcessingResult, at: string): Promise<boolean>;
   /** uploading|uploaded|processing|failed -> failed. Never overwrites ready or aborted. */
   markFailed(fileId: string, error: string, at: string): Promise<boolean>;
+  /** Deletes the record, but only while it is ready or failed (finished, with no worker holding it). */
+  remove(fileId: string): Promise<boolean>;
 }
 
 export type LedgerOutcome =

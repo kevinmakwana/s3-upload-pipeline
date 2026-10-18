@@ -1,4 +1,4 @@
-import { Controller, Get, Inject, Param, Query, Sse } from '@nestjs/common';
+import { Controller, Delete, Get, HttpCode, Inject, Param, Query, Sse } from '@nestjs/common';
 import { MAX_PAGE_SIZE } from '@s3up/core';
 import { map } from 'rxjs';
 import { z } from 'zod';
@@ -34,5 +34,16 @@ export class FilesController {
   @Get(':id')
   get(@CurrentUser() userId: string, @Param('id') id: string) {
     return this.files.get(userId, id);
+  }
+
+  @Get(':id/download')
+  download(@CurrentUser() userId: string, @Param('id') id: string) {
+    return this.files.downloadUrl(userId, id);
+  }
+
+  @Delete(':id')
+  @HttpCode(204)
+  async remove(@CurrentUser() userId: string, @Param('id') id: string) {
+    await this.files.delete(userId, id);
   }
 }

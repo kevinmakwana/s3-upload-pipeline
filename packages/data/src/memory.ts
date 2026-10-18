@@ -42,6 +42,11 @@ export class MemoryFileStore implements FileStore {
     delete r.expiresAt;
     return structuredClone(r);
   }
+  async remove(fileId: string) {
+    const r = this.records.get(fileId);
+    if (!r || (r.status !== 'ready' && r.status !== 'failed')) return false;
+    return this.records.delete(fileId);
+  }
   async markAborted(fileId: string, at: string) {
     return this.move(fileId, ['uploading'], 'aborted', at);
   }
