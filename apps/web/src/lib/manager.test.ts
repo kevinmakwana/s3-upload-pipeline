@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { HttpError, MiB, type FileDto, type FilePage, type PartTransport, type PutRequest, type UploadApi } from '@s3up/core';
+import { HttpError, MiB, type DownloadUrlResponse, type FileDto, type FilePage, type PartTransport, type PutRequest, type UploadApi } from '@s3up/core';
 import { BrowserFileSource } from './browser-source';
 import { IndexedDbResumeStore } from './idb-store';
 import { CONCURRENCY_KEY, UploadManager } from './manager';
@@ -260,5 +260,100 @@ describe('UploadManager file list paging', () => {
       expect(manager.getSnapshot().hasMoreFiles).toBe(true);
       return manager.loadMoreFiles().then(() => expect(backend.listFilesPage.mock.calls[0]![0]).toMatchObject({ cursor: 'live-1' }));
     });
+  });
+});
+
+describe('UploadManager file actions', () => {
+  const dto = (n: number): FileDto => ({
+    id: `f${n}`, fileName: `f${n}.bin`, contentType: 'application/octet-stream', size: 1, status: 'ready', partSize: 5 * MiB, partCount: 1,
+    createdAt: `2026-01-01T00:00:0${n}.000Z`, updatedAt: `2026-01-01T00:00:0${n}.000Z`,
+  });
+  const ids = (m: UploadManager) => m.getSnapshot().files.map((f) => f.id);
+
+  function setup(overrides: { getDownloadUrl?: (id: string) => Promise<DownloadUrlResponse>; deleteFile?: (id: string) => Promise<void> } = {}) {
+    const started: string[] = [];
+    const backend = Object.assign(new Backend(), {
+      listFilesPage: jest.fn(async (): Promise<FilePage> => ({ files: [dto(3), dto(2), dto(1)] })),
+      getDownloadUrl: jest.fn(overrides.getDownloadUrl ?? (async (id: string) => ({ url: `https://s3/${id}?sig`, expiresAt: '' }))),
+      deleteFile: jest.fn(overrides.deleteFile ?? (async () => undefined)),
+    });
+    const manager = new UploadManager({
+      api: backend, transport: backend, store: new IndexedDbResumeStore(`actions-${Math.random()}`), makeSource: (f) => new BrowserFileSource(f),
+      uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency: 1, startDownload: (url) => started.push(url),
+    });
+    return { manager, backend, started };
+  }
+
+  it('asks for a link and starts the download with it', async () => {
+    const { manager, backend, started } = setup();
+    await manager.downloadFile('f2');
+    expect(backend.getDownloadUrl).toHaveBeenCalledWith('f2');
+    expect(started).toEqual(['https://s3/f2?sig']);
+    expect(manager.getSnapshot().fileActions).toEqual({});
+  });
+
+  it('shows the reason when a download link cannot be had, then lets you try again', async () => {
+    let fail = true;
+    const { manager, started } = setup({
+      getDownloadUrl: async (id) => {
+        if (fail) throw new HttpError('File is processing, not ready to download', 409);
+        return { url: `https://s3/${id}`, expiresAt: '' };
+      },
+    });
+    await manager.downloadFile('f1');
+    expect(manager.getSnapshot().fileActions.f1).toEqual({ error: 'File is processing, not ready to download' });
+    expect(started).toEqual([]);
+    fail = false;
+    await manager.downloadFile('f1');
+    expect(started).toEqual(['https://s3/f1']);
+    expect(manager.getSnapshot().fileActions.f1).toBeUndefined();
+  });
+
+  it('marks the file busy while a request is running and ignores a second click', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { manager, backend } = setup({ deleteFile: () => gate });
+    await manager.refreshFiles();
+    const first = manager.deleteFile('f2');
+    const second = manager.deleteFile('f2');
+    expect(manager.getSnapshot().fileActions.f2).toEqual({ busy: 'delete' });
+    release();
+    await Promise.all([first, second]);
+    expect(backend.deleteFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes a deleted file from the list at once', async () => {
+    const { manager, backend } = setup();
+    await manager.refreshFiles();
+    await manager.deleteFile('f2');
+    expect(backend.deleteFile).toHaveBeenCalledWith('f2');
+    expect(ids(manager)).toEqual(['f3', 'f1']);
+    expect(manager.getSnapshot().fileActions).toEqual({});
+  });
+
+  it('keeps the file and shows the reason when deleting fails', async () => {
+    const { manager } = setup({ deleteFile: async () => { throw new HttpError('File changed while it was being deleted; try again', 409); } });
+    await manager.refreshFiles();
+    await manager.deleteFile('f2');
+    expect(ids(manager)).toEqual(['f3', 'f2', 'f1']);
+    expect(manager.getSnapshot().fileActions.f2).toEqual({ error: 'File changed while it was being deleted; try again' });
+  });
+
+  it('does not let a stale list bring a deleted file back (the by-user index is eventually consistent)', async () => {
+    const { manager, backend } = setup();
+    await manager.refreshFiles();
+    await manager.deleteFile('f2');
+    manager.applyFirstPage({ files: [dto(3), dto(2), dto(1)] }); // a push that still includes it
+    expect(ids(manager)).toEqual(['f3', 'f1']);
+    backend.listFilesPage.mockResolvedValueOnce({ files: [dto(3), dto(2)], nextCursor: 'c' });
+    await manager.refreshFiles();
+    expect(ids(manager)).not.toContain('f2');
+  });
+
+  it('lets the user dismiss an error', async () => {
+    const { manager } = setup({ getDownloadUrl: async () => { throw new HttpError('nope', 409); } });
+    await manager.downloadFile('f1');
+    manager.dismissFileError('f1');
+    expect(manager.getSnapshot().fileActions).toEqual({});
   });
 });

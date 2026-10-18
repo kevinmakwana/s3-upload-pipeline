@@ -1,5 +1,6 @@
 import {
   Upload,
+  type DownloadUrlResponse,
   type FileDto,
   type FilePage,
   type PartSource,
@@ -36,18 +37,32 @@ export interface LocalUpload {
   canReopenFile: boolean;
 }
 
+/** What is happening to a file in the list right now, or why the last attempt failed. */
+export interface FileAction {
+  busy?: 'download' | 'delete';
+  error?: string;
+}
+
 export interface ManagerSnapshot {
   local: LocalUpload[];
   files: FileDto[];
   /** Older files exist on the server that have not been loaded yet. */
   hasMoreFiles: boolean;
   loadingMoreFiles: boolean;
+  /** Per file id; absent when nothing is going on. */
+  fileActions: Record<string, FileAction>;
   connection: ConnectionState;
   concurrency: number;
 }
 
 export interface ManagerDeps {
-  api: UploadApi & { listFilesPage?(options?: { limit?: number; cursor?: string }): Promise<FilePage> };
+  api: UploadApi & {
+    listFilesPage?(options?: { limit?: number; cursor?: string }): Promise<FilePage>;
+    getDownloadUrl?(fileId: string): Promise<DownloadUrlResponse>;
+    deleteFile?(fileId: string): Promise<void>;
+  };
+  /** Starts saving the file at this (attachment) URL, for example by clicking a hidden link. */
+  startDownload?: (url: string) => void;
   transport: PartTransport;
   store: ResumeStore & {
     list(): Promise<PersistedUpload[]>;
@@ -83,6 +98,9 @@ export class UploadManager {
   /** Where the next page of older files starts; undefined once the whole list is loaded. */
   private filesCursor?: string;
   private loadingMoreFiles = false;
+  private readonly fileActions = new Map<string, FileAction>();
+  /** Files deleted in this session. The by-user index is eventually consistent, so a list may still show them. */
+  private readonly deletedIds = new Set<string>();
   private connection: ConnectionState = 'connecting';
   private concurrency: number;
   private snapshot: ManagerSnapshot;
@@ -109,17 +127,52 @@ export class UploadManager {
    * is the complete list and replaces everything. Otherwise it replaces only the files it covers,
    * so older pages the user has already loaded stay put.
    */
-  applyFirstPage({ files, nextCursor }: FilePage): void {
+  applyFirstPage({ files: received, nextCursor }: FilePage): void {
+    const files = received.filter((f) => !this.deletedIds.has(f.id));
     if (!nextCursor) {
       this.files = files;
       this.filesCursor = undefined;
     } else {
-      const oldest = files.at(-1)?.createdAt;
-      const inPage = new Set(files.map((f) => f.id));
+      const oldest = received.at(-1)?.createdAt;
+      const inPage = new Set(received.map((f) => f.id));
       const older = oldest === undefined ? [] : this.files.filter((f) => !inPage.has(f.id) && f.createdAt <= oldest);
       this.files = [...files, ...older];
       // Nothing older is loaded, so the page's own cursor is the way to older files.
       if (older.length === 0) this.filesCursor = nextCursor;
+    }
+    this.publish(true);
+  }
+
+  /** Gets a short-lived link for the original file and starts saving it. */
+  async downloadFile(fileId: string): Promise<void> {
+    await this.runFileAction(fileId, 'download', async () => {
+      const link = await this.deps.api.getDownloadUrl?.(fileId);
+      if (link) this.deps.startDownload?.(link.url);
+    });
+  }
+
+  /** Permanently deletes a finished file. It leaves the list straight away; a refusal is shown on the row. */
+  async deleteFile(fileId: string): Promise<void> {
+    await this.runFileAction(fileId, 'delete', async () => {
+      await this.deps.api.deleteFile?.(fileId);
+      this.deletedIds.add(fileId);
+      this.files = this.files.filter((f) => f.id !== fileId);
+    });
+  }
+
+  dismissFileError(fileId: string): void {
+    if (this.fileActions.delete(fileId)) this.publish(true);
+  }
+
+  private async runFileAction(fileId: string, kind: 'download' | 'delete', run: () => Promise<void>): Promise<void> {
+    if (this.fileActions.get(fileId)?.busy) return;
+    this.fileActions.set(fileId, { busy: kind });
+    this.publish(true);
+    try {
+      await run();
+      this.fileActions.delete(fileId);
+    } catch (err) {
+      this.fileActions.set(fileId, { error: err instanceof Error ? err.message : 'Something went wrong' });
     }
     this.publish(true);
   }
@@ -134,7 +187,7 @@ export class UploadManager {
       const page = await this.deps.api.listFilesPage({ cursor });
       if (this.filesCursor !== cursor) return; // the list was replaced while we waited
       const have = new Set(this.files.map((f) => f.id));
-      this.files = [...this.files, ...page.files.filter((f) => !have.has(f.id))];
+      this.files = [...this.files, ...page.files.filter((f) => !have.has(f.id) && !this.deletedIds.has(f.id))];
       this.filesCursor = page.nextCursor;
     } catch {
       /* keep what we have; the button stays so the user can retry */
@@ -350,6 +403,7 @@ export class UploadManager {
       files: this.files,
       hasMoreFiles: this.filesCursor !== undefined,
       loadingMoreFiles: this.loadingMoreFiles,
+      fileActions: Object.fromEntries(this.fileActions),
       connection: this.connection,
       concurrency: this.concurrency,
     };

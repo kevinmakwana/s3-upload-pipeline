@@ -10,7 +10,7 @@ import type { LocalUpload } from './lib/manager';
 type Row = { key: string; local?: LocalUpload; file?: FileDto; sort: string };
 
 export function App() {
-  const { local, files, connection, concurrency, hasMoreFiles, loadingMoreFiles } = useManager();
+  const { local, files, connection, concurrency, hasMoreFiles, loadingMoreFiles, fileActions } = useManager();
 
   useEffect(() => {
     const abort = new AbortController();
@@ -73,7 +73,7 @@ export function App() {
       ) : (
         <ul className="rows">
           {rows.map((r) => (
-            <FileRow key={r.key} local={r.local} file={r.file} />
+            <FileRow key={r.key} local={r.local} file={r.file} action={r.file ? fileActions[r.file.id] : undefined} />
           ))}
         </ul>
       )}
