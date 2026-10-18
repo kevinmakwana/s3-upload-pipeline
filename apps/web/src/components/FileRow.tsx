@@ -1,7 +1,7 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { FileDto, FileStatus } from '@s3up/core';
 import { formatBytes, formatDuration, formatRate, shortHash } from '../lib/format';
-import type { LocalUpload } from '../lib/manager';
+import type { FileAction, LocalUpload } from '../lib/manager';
 import { manager } from '../lib/runtime';
 import { PartMap, type PartMapTone } from './PartMap';
 import { Stepper } from './Stepper';
@@ -9,11 +9,12 @@ import { Stepper } from './Stepper';
 interface Props {
   local?: LocalUpload;
   file?: FileDto;
+  action?: FileAction;
 }
 
 const BUSY = new Set(['idle', 'preparing', 'verifying', 'uploading', 'completing']);
 
-export function FileRow({ local, file }: Props) {
+export function FileRow({ local, file, action }: Props) {
   const picker = useRef<HTMLInputElement>(null);
   const name = local?.fileName ?? file!.fileName;
   const size = local?.size ?? file!.size;
@@ -45,7 +46,7 @@ export function FileRow({ local, file }: Props) {
       {local ? (
         <LocalDetails local={local} busy={busy} onPick={() => picker.current?.click()} />
       ) : (
-        <ServerDetails file={file!} />
+        <ServerDetails file={file!} action={action} />
       )}
 
       {local?.phase === 'interrupted' && !local.canReopenFile ? (
@@ -131,7 +132,7 @@ function LocalDetails({ local, busy, onPick }: { local: LocalUpload; busy: boole
   );
 }
 
-function ServerDetails({ file }: { file: FileDto }) {
+function ServerDetails({ file, action }: { file: FileDto; action?: FileAction }) {
   const r = file.result;
   return (
     <>
@@ -156,6 +157,58 @@ function ServerDetails({ file }: { file: FileDto }) {
       {file.status === 'failed' ? (
         <p className="row-error" role="alert">
           {file.error ?? 'Processing failed.'}
+        </p>
+      ) : null}
+      <FileActions file={file} action={action} />
+    </>
+  );
+}
+
+/** Download and delete for a finished file. Deleting asks for a second click instead of opening a dialog. */
+function FileActions({ file, action }: { file: FileDto; action?: FileAction }) {
+  const [confirming, setConfirming] = useState(false);
+  const canDownload = file.status === 'ready';
+  const canDelete = file.status === 'ready' || file.status === 'failed';
+  if (!canDownload && !canDelete) return null;
+  const busy = action?.busy;
+  return (
+    <>
+      <div className="row-actions">
+        {canDownload ? (
+          <button type="button" className="btn" disabled={busy !== undefined} onClick={() => void manager.downloadFile(file.id)}>
+            {busy === 'download' ? 'Preparing…' : 'Download'}
+          </button>
+        ) : null}
+        {canDelete && !confirming ? (
+          <button type="button" className="btn btn-quiet" disabled={busy !== undefined} onClick={() => setConfirming(true)}>
+            {busy === 'delete' ? 'Deleting…' : 'Delete'}
+          </button>
+        ) : null}
+        {canDelete && confirming ? (
+          <>
+            <span className="confirm-text">Delete this file permanently?</span>
+            <button
+              type="button"
+              className="btn btn-danger"
+              onClick={() => {
+                setConfirming(false);
+                void manager.deleteFile(file.id);
+              }}
+            >
+              Delete permanently
+            </button>
+            <button type="button" className="btn btn-quiet" onClick={() => setConfirming(false)}>
+              Keep
+            </button>
+          </>
+        ) : null}
+      </div>
+      {action?.error ? (
+        <p className="row-error" role="alert">
+          {action.error}{' '}
+          <button type="button" className="btn btn-quiet btn-inline" onClick={() => manager.dismissFileError(file.id)}>
+            Dismiss
+          </button>
         </p>
       ) : null}
     </>

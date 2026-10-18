@@ -83,7 +83,7 @@ sequenceDiagram
 - Every object lives under its owner's prefix, `uploads/<user>/<file id>/…`. File names are sanitised so they cannot escape it, and every API call checks ownership (someone else's upload looks exactly like a missing one).
 - The bucket blocks all public access, enforces TLS, encrypts at rest and is versioned. CORS allows only the configured origins.
 - Allowed types and a maximum size are validated by the API before anything is created, and again by the worker, which rejects content that does not match its declared type (a ZIP renamed `.png` ends up `failed`).
-- IAM is least privilege and checked by tests: the worker may read `uploads/*`, write `thumbnails/*` and use two DynamoDB actions; the API gets a separate managed policy with only what it calls.
+- IAM is least privilege and checked by tests: the worker may read `uploads/*`, write `thumbnails/*` and use two DynamoDB actions; the API gets a separate managed policy with only what it calls (including deleting versions under `uploads/*` and `thumbnails/*`, and listing versions only for those two prefixes).
 
 ### Authentication
 
@@ -152,6 +152,7 @@ Environment variables for the API (the quick start writes `.env.local` for you; 
 | `S3_PUBLIC_ENDPOINT` | unset | Only if the browser reaches S3 at a different URL than the API does |
 | `AUTH_MODE` | `header` | `jwt` to verify bearer tokens, `header` for the insecure local demo (see [Authentication](#authentication)) |
 | `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_JWKS_URL` | required with `AUTH_MODE=jwt` | Expected `iss` and `aud`, and the https URL of the issuer's JWKS |
+| `DOWNLOAD_URL_EXPIRES_SECONDS` | 300 | Lifetime of download links (clamped to 60..3600) |
 | `ALLOW_INSECURE_DEMO_AUTH` | unset | Set to `true` to let `AUTH_MODE=header` start with `NODE_ENV=production`. Do not |
 
 Web app build-time variables: `VITE_API_URL` (API base URL) and `VITE_AUTH_MODE` (`demo`, the default, or `bearer`).
@@ -171,6 +172,8 @@ All routes except `/health` require authentication: a bearer token in `jwt` mode
 | `DELETE /uploads/:id` | Abort and free the stored parts |
 | `GET /files?limit=&cursor=` | One page of your files, newest first (`limit` 1 to 100, default 50). The response is `{ files, nextCursor? }`; pass `nextCursor` back as `cursor` for the next page. Aborted uploads are left out. A malformed cursor is a `400` |
 | `GET /files/:id` | File status and processing result |
+| `GET /files/:id/download` | A short-lived presigned link (5 minutes by default) to the original file, served as an attachment under its own name and pinned to the verified version. Only for `ready` files; anything else is a `409` |
+| `DELETE /files/:id` | Permanently delete a `ready` or `failed` file: every stored version of the object and of its thumbnail, then the record. A file that is uploading or being processed is a `409`. If S3 refuses, the record is kept and the request can be retried |
 | `GET /files/stream` | SSE stream of the newest page (`{ files, nextCursor? }`); older pages come from `GET /files` |
 
 ## Testing

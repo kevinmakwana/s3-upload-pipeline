@@ -341,6 +341,36 @@ code {
   display: flex;
   gap: 8px;
   margin-top: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.confirm-text {
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+}
+
+.btn-danger {
+  background: var(--failed);
+  border-color: var(--failed);
+  color: #fff;
+}
+
+@media (prefers-color-scheme: dark) {
+  .btn-danger {
+    color: #0a1114;
+  }
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--ink);
+  filter: brightness(1.06);
+}
+
+.btn-inline {
+  padding: 0 6px;
+  min-height: 0;
+  text-decoration: underline;
 }
 
 /* ----------------------------------------------------------------- stepper */

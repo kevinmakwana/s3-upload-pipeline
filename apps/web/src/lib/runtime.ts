@@ -30,7 +30,18 @@ export const getAuthHeaders: HeaderProvider = createAuthHeaders(
   authMode === 'bearer' ? { mode: 'bearer', getToken: () => window.s3upAuth?.getToken() } : { mode: 'demo', userId: userId! },
 );
 
+/** The link carries `Content-Disposition: attachment`, so clicking it saves the file and the page stays put. */
+function startDownload(url: string): void {
+  const link = document.createElement('a');
+  link.href = url;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
 export const manager = new UploadManager({
+  startDownload,
   api: new HttpUploadApi({ baseUrl: API_URL, getHeaders: getAuthHeaders }),
   transport: new XhrTransport(),
   store: new IndexedDbResumeStore(),
