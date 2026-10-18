@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { GetObjectCommand, ListPartsCommand } from '@aws-sdk/client-s3';
+import { GetObjectCommand, ListObjectVersionsCommand, ListPartsCommand } from '@aws-sdk/client-s3';
 import { ReceiveMessageCommand, SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { Jimp } from 'jimp';
 import { MemoryResumeStore, MiB, Upload, sha256Base64, type FileDto, type UploadOptions } from '@s3up/core';
@@ -190,6 +190,71 @@ describe('processing', () => {
     expect(after.updatedAt).toBe(ready.updatedAt); // a re-run would have moved it through "processing"
     const dlq = await sqs.send(new ReceiveMessageCommand({ QueueUrl: process.env.DLQ_URL, WaitTimeSeconds: 0 }));
     expect(dlq.Messages ?? []).toHaveLength(0);
+  });
+});
+
+describe('download and delete', () => {
+  /** Every version and delete marker S3 holds under this key (an empty list means it is really gone). */
+  async function storedVersions(key: string): Promise<string[]> {
+    const out = await createS3Client().send(new ListObjectVersionsCommand({ Bucket: process.env.BUCKET_NAME, Prefix: key }));
+    return [...(out.Versions ?? []), ...(out.DeleteMarkers ?? [])].filter((v) => v.Key === key).map((v) => v.VersionId!);
+  }
+
+  it('downloads the original bytes as an attachment under the original name', async () => {
+    const api = server.apiFor(userId());
+    const png = Buffer.from(await new Jimp({ width: 120, height: 90, color: 0x22aa55ff }).getBuffer('image/png'));
+    const uploaded = await uploadSmall(api, 'my photo.png', 'image/png', png);
+    await waitForFile(api, uploaded.id, (f) => f.status === 'ready' || f.status === 'failed');
+
+    const link = await api.getDownloadUrl(uploaded.id);
+    const res = await fetch(link.url);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toMatch(/^attachment; filename="my photo\.png"/);
+    expect(Buffer.from(await res.arrayBuffer()).equals(png)).toBe(true);
+  });
+
+  it('will not give a download link, or delete, while the file is still uploading', async () => {
+    const api = server.apiFor(userId());
+    const file = await api.init({ fileName: 'later.bin', fileSize: 1024, contentType: 'application/octet-stream' });
+    await expect(api.getDownloadUrl(file.id)).rejects.toMatchObject({ status: 409 });
+    await expect(api.deleteFile(file.id)).rejects.toMatchObject({ status: 409 });
+    await api.abort(file.id);
+  });
+
+  it('deletes a ready file for good: object, every version, thumbnail and record', async () => {
+    const user = userId();
+    const api = server.apiFor(user);
+    const png = Buffer.from(await new Jimp({ width: 300, height: 200, color: 0xdd4422ff }).getBuffer('image/png'));
+    const uploaded = await uploadSmall(api, 'goner.png', 'image/png', png);
+    const ready = await waitForFile(api, uploaded.id, (f) => f.status === 'ready' || f.status === 'failed');
+    const objectKey = await objectKeyFor(ready.id);
+    const thumbnailKey = ready.result!.thumbnailKey!;
+    expect((await storedVersions(objectKey)).length).toBeGreaterThan(0);
+    expect((await storedVersions(thumbnailKey)).length).toBeGreaterThan(0);
+
+    await api.deleteFile(ready.id);
+
+    expect(await storedVersions(objectKey)).toEqual([]);
+    expect(await storedVersions(thumbnailKey)).toEqual([]);
+    await expect(api.getFile(ready.id)).rejects.toMatchObject({ status: 404 });
+    expect((await api.listFiles()).map((f) => f.id)).not.toContain(ready.id);
+    await expect(api.deleteFile(ready.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it('deletes a failed file too, and keeps other users\' files out of reach', async () => {
+    const mallory = server.apiFor(userId());
+    const api = server.apiFor(userId());
+    const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(2048)]);
+    const uploaded = await uploadSmall(api, 'bad.png', 'image/png', zip);
+    const failed = await waitForFile(api, uploaded.id, (f) => f.status === 'ready' || f.status === 'failed');
+    expect(failed.status).toBe('failed');
+    const key = await objectKeyFor(failed.id);
+
+    await expect(mallory.deleteFile(failed.id)).rejects.toMatchObject({ status: 404 });
+    expect((await storedVersions(key)).length).toBeGreaterThan(0);
+
+    await api.deleteFile(failed.id);
+    expect(await storedVersions(key)).toEqual([]);
   });
 });
 
