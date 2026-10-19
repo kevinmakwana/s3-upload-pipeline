@@ -44,6 +44,11 @@ export interface AppConfig {
   rateLimits: RateLimits;
   /** Proxies in front of the API whose X-Forwarded-For to trust (0 when clients connect directly). */
   trustProxyHops: number;
+  /**
+   * GuardDuty Malware Protection scans every upload. Downloads then wait for a clean verdict on the
+   * exact stored version. Turn on only where the stack has the scan plan (it is off for LocalStack).
+   */
+  malwareScan: boolean;
 }
 
 const int = (v: string | undefined, fallback: number) => {
@@ -91,6 +96,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       initPerMinute: whole('RATE_LIMIT_INIT_PER_MINUTE', 30, 1),
     },
     trustProxyHops: whole('TRUST_PROXY_HOPS', 0, 0),
+    malwareScan: env.MALWARE_SCAN === 'true',
   };
 }
 

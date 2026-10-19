@@ -61,7 +61,7 @@ export class DynamoFileStore implements FileStore {
         }),
       );
       for (const item of res.Items ?? []) {
-        if (item.status === 'aborted') continue;
+        if (item.status === 'aborted' || item.status === 'quarantined') continue;
         storedBytes += Number(item.size) || 0;
         if (item.status === 'uploading') activeUploads++;
       }
@@ -145,9 +145,9 @@ export class DynamoFileStore implements FileStore {
         new DeleteCommand({
           TableName: this.tableName,
           Key: { pk: fileKey(fileId) },
-          ConditionExpression: '#s IN (:ready, :failed)',
+          ConditionExpression: '#s IN (:ready, :failed, :quarantined)',
           ExpressionAttributeNames: { '#s': 'status' },
-          ExpressionAttributeValues: { ':ready': 'ready', ':failed': 'failed' },
+          ExpressionAttributeValues: { ':ready': 'ready', ':failed': 'failed', ':quarantined': 'quarantined' },
         }),
       ),
     );
@@ -180,6 +180,17 @@ export class DynamoFileStore implements FileStore {
       'failed',
       'SET updatedAt = :at, processedAt = :at, #err = :error REMOVE expiresAt',
       { ':at': at, ':error': error.slice(0, 1000) },
+    );
+  }
+
+  markQuarantined(fileId: string, reason: string, at: string): Promise<boolean> {
+    return this.transition(
+      fileId,
+      ['uploading', 'uploaded', 'processing', 'ready', 'failed', 'quarantined'],
+      'quarantined',
+      'SET updatedAt = :at, processedAt = :at, #err = :error REMOVE #result, expiresAt',
+      { ':at': at, ':error': reason.slice(0, 1000) },
+      { '#result': 'result' },
     );
   }
 

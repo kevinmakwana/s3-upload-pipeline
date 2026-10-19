@@ -24,7 +24,7 @@ export function FileRow({ local, file, action }: Props) {
 
   const tone: PartMapTone = local
     ? local.phase === 'error' ? 'failed' : busy ? 'uploading' : 'paused'
-    : status === 'failed' ? 'failed' : status === 'ready' ? 'ready' : status === 'processing' || status === 'uploaded' ? 'processing' : 'uploading';
+    : status === 'failed' || status === 'quarantined' ? 'failed' : status === 'ready' ? 'ready' : status === 'processing' || status === 'uploaded' ? 'processing' : 'uploading';
 
   const mapLabel = local
     ? `${local.partsDone} of ${local.partCount} parts uploaded`
@@ -154,9 +154,9 @@ function ServerDetails({ file, action }: { file: FileDto; action?: FileAction })
           </>
         ) : null}
       </div>
-      {file.status === 'failed' ? (
+      {file.status === 'failed' || file.status === 'quarantined' ? (
         <p className="row-error" role="alert">
-          {file.error ?? 'Processing failed.'}
+          {file.error ?? (file.status === 'quarantined' ? 'A malware scan found a threat, so the file was removed.' : 'Processing failed.')}
         </p>
       ) : null}
       <FileActions file={file} action={action} />
@@ -168,7 +168,7 @@ function ServerDetails({ file, action }: { file: FileDto; action?: FileAction })
 function FileActions({ file, action }: { file: FileDto; action?: FileAction }) {
   const [confirming, setConfirming] = useState(false);
   const canDownload = file.status === 'ready';
-  const canDelete = file.status === 'ready' || file.status === 'failed';
+  const canDelete = file.status === 'ready' || file.status === 'failed' || file.status === 'quarantined';
   if (!canDownload && !canDelete) return null;
   const busy = action?.busy;
   return (

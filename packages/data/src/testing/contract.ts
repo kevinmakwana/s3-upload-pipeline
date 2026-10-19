@@ -5,6 +5,7 @@ import type { FileStore, ProcessingLedger } from '../store';
 
 const T0 = '2026-01-01T00:00:00.000Z';
 const T1 = '2026-01-01T00:00:10.000Z';
+const T2 = '2026-01-01T00:00:20.000Z';
 
 export function newRecord(overrides: Partial<FileRecord> = {}): FileRecord {
   const id = randomUUID();
@@ -135,6 +136,7 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
         await mk(800, async (id) => { await store.markProcessing(id, T1); await store.markReady(id, { sha256: 'a', size: 800 }, T1); });
         await mk(1600, async (id) => { await store.markProcessing(id, T1); await store.markFailed(id, 'bad', T1); });
         await mk(3200, (id) => store.markAborted(id, T1)); // gives its storage back
+        await mk(12800, (id) => store.markQuarantined(id, 'malware', T1)); // the object was deleted
         await mk(6400, undefined, 'someone-else');
         expect(await store.usage(user)).toEqual({ activeUploads: 2, storedBytes: 100 + 200 + 400 + 800 + 1600 });
       });
@@ -165,12 +167,13 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
     });
 
     describe('remove', () => {
-      it.each([['ready'], ['failed']] as const)('deletes a %s record, and it disappears from get and list', async (finalStatus) => {
+      it.each([['ready'], ['failed'], ['quarantined']] as const)('deletes a %s record, and it disappears from get and list', async (finalStatus) => {
         const { store } = await make();
         const r = newRecord();
         await store.create(r);
         await store.markProcessing(r.id, T1);
         if (finalStatus === 'ready') await store.markReady(r.id, { sha256: 'a', size: 1 }, T1);
+        else if (finalStatus === 'quarantined') await store.markQuarantined(r.id, 'malware', T1);
         else await store.markFailed(r.id, 'bad', T1);
         expect(await store.remove(r.id)).toBe(true);
         expect(await store.get(r.id)).toBeUndefined();
@@ -256,6 +259,73 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
       expect(await store.markUploaded(r.id, { at: T1 })).toBeUndefined();
       expect(await store.markProcessing(r.id, T1)).toBe(false);
       expect((await store.get(r.id))?.status).toBe('aborted');
+    });
+
+    describe('quarantine', () => {
+      const ready = async (store: FileStore) => {
+        const r = newRecord();
+        await store.create(r);
+        await store.markProcessing(r.id, T1);
+        await store.markReady(r.id, { sha256: 'a', size: 100, thumbnailKey: 'thumbnails/x.jpg' }, T1);
+        return r;
+      };
+
+      it.each([['uploading'], ['uploaded'], ['processing'], ['ready'], ['failed']] as const)('takes a %s file out of service, keeping the reason and dropping the result', async (status) => {
+        const { store } = await make();
+        const r = newRecord();
+        await store.create(r);
+        if (status === 'uploaded') await store.markUploaded(r.id, { at: T1 });
+        if (status === 'processing') await store.markProcessing(r.id, T1);
+        if (status === 'ready') {
+          await store.markProcessing(r.id, T1);
+          await store.markReady(r.id, { sha256: 'a', size: 100, thumbnailKey: 'thumbnails/x.jpg' }, T1);
+        }
+        if (status === 'failed') await store.markFailed(r.id, 'bad', T1);
+        expect(await store.markQuarantined(r.id, 'Malware found: Eicar-Test-Signature', T2)).toBe(true);
+        const after = (await store.get(r.id))!;
+        expect(after).toMatchObject({ status: 'quarantined', error: 'Malware found: Eicar-Test-Signature', updatedAt: T2 });
+        expect(after.result).toBeUndefined();
+        expect(after.expiresAt).toBeUndefined();
+      });
+
+      it('is final: nothing moves a quarantined file back into service', async () => {
+        const { store } = await make();
+        const r = await ready(store);
+        await store.markQuarantined(r.id, 'malware', T2);
+        expect(await store.markProcessing(r.id, T2)).toBe(false);
+        expect(await store.markReady(r.id, { sha256: 'a', size: 1 }, T2)).toBe(false);
+        expect(await store.markFailed(r.id, 'late', T2)).toBe(false);
+        expect(await store.markAborted(r.id, T2)).toBe(false);
+        const late = await store.markUploaded(r.id, { etag: '"e"', versionId: 'v2', at: T2 });
+        expect(late?.status).toBe('quarantined');
+        expect((await store.get(r.id))?.status).toBe('quarantined');
+      });
+
+      it('can be repeated (scan results are delivered at least once)', async () => {
+        const { store } = await make();
+        const r = await ready(store);
+        expect(await store.markQuarantined(r.id, 'malware', T2)).toBe(true);
+        expect(await store.markQuarantined(r.id, 'malware', T2)).toBe(true);
+        expect((await store.get(r.id))?.status).toBe('quarantined');
+      });
+
+      it('leaves an aborted upload and an unknown file alone', async () => {
+        const { store } = await make();
+        const r = newRecord();
+        await store.create(r);
+        await store.markAborted(r.id, T1);
+        expect(await store.markQuarantined(r.id, 'malware', T2)).toBe(false);
+        expect((await store.get(r.id))?.status).toBe('aborted');
+        expect(await store.markQuarantined('nope', 'malware', T2)).toBe(false);
+      });
+
+      it('still lists the file, with its reason, so the owner can see what happened', async () => {
+        const { store } = await make();
+        const r = await ready(store);
+        await store.markQuarantined(r.id, 'malware', T2);
+        const listed = (await store.listByUser(r.userId, { excludeAborted: true })).items.find((x) => x.id === r.id);
+        expect(listed).toMatchObject({ status: 'quarantined', error: 'malware' });
+      });
     });
 
     it('does not resurrect unknown files', async () => {

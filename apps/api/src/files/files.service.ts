@@ -1,12 +1,15 @@
-import { DeleteObjectsCommand, GetObjectCommand, ListObjectVersionsCommand, type S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, GetObjectTaggingCommand, type S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { DEFAULT_PAGE_SIZE, buildThumbnailKey, type DownloadUrlResponse, type FileDto, type FilePage } from '@s3up/core';
-import { InvalidCursorError, toDto, type FileRecord, type FileStore, type RecordPage } from '@s3up/data';
+import { InvalidCursorError, deleteAllVersions, toDto, type FileRecord, type FileStore, type RecordPage } from '@s3up/data';
 import { Observable, interval } from 'rxjs';
 import type { AppConfig } from '../config';
 import { CONFIG, FILES, S3, S3_PRESIGNER } from '../common/tokens';
 import { attachmentDisposition } from './content-disposition';
+
+/** The object tag GuardDuty Malware Protection for S3 writes its verdict to. */
+const SCAN_STATUS_TAG = 'GuardDutyMalwareScanStatus';
 
 @Injectable()
 export class FilesService {
@@ -31,7 +34,9 @@ export class FilesService {
   /** A short-lived link that downloads the original file, as an attachment under its own name. */
   async downloadUrl(userId: string, fileId: string): Promise<DownloadUrlResponse> {
     const record = await this.owned(userId, fileId);
+    if (record.status === 'quarantined') throw new ConflictException('This file was quarantined because a scan found malware in it');
     if (record.status !== 'ready') throw new ConflictException(`File is ${record.status}, not ready to download`);
+    if (this.config.malwareScan) await this.requireCleanScan(record);
     const expiresIn = this.config.downloadUrlExpiresSeconds;
     const url = await getSignedUrl(
       this.presigner,
@@ -48,43 +53,34 @@ export class FilesService {
   }
 
   /**
+   * GuardDuty tags each scanned version with its verdict. Only a clean verdict on the exact version
+   * we would hand out lets a download through; no tag yet means the scan has not finished. If the tags
+   * cannot be read the error propagates (a 500), so a failure never turns into permission.
+   */
+  private async requireCleanScan(record: FileRecord): Promise<void> {
+    const { TagSet } = await this.s3.send(new GetObjectTaggingCommand({ Bucket: this.config.bucket, Key: record.s3Key, VersionId: record.versionId }));
+    const verdict = TagSet?.find((t) => t.Key === SCAN_STATUS_TAG)?.Value;
+    if (verdict === 'NO_THREATS_FOUND') return;
+    if (!verdict) throw new ConflictException('This file is still being scanned for malware; try again in a minute');
+    if (verdict === 'THREATS_FOUND') throw new ConflictException('A scan found malware in this file, so it cannot be downloaded');
+    throw new ConflictException(`This file could not be scanned (${verdict}), so it cannot be downloaded`);
+  }
+
+  /**
    * Permanently deletes a finished file: every stored version of the object and of its thumbnail
    * (the bucket is versioned, so a plain delete would only add a marker), then the record.
    * Storage goes first: if that fails the record is still there and the request can be retried.
    */
   async delete(userId: string, fileId: string): Promise<void> {
     const record = await this.owned(userId, fileId);
-    if (record.status !== 'ready' && record.status !== 'failed') {
+    if (record.status !== 'ready' && record.status !== 'failed' && record.status !== 'quarantined') {
       throw new ConflictException(
         record.status === 'uploading' ? 'Upload is still in progress; cancel it instead' : `File is ${record.status}; try again when processing has finished`,
       );
     }
-    await this.deleteAllVersions(record.s3Key);
-    await this.deleteAllVersions(record.result?.thumbnailKey ?? buildThumbnailKey(record.userId, record.id));
+    await deleteAllVersions(this.s3, this.config.bucket, record.s3Key);
+    await deleteAllVersions(this.s3, this.config.bucket, record.result?.thumbnailKey ?? buildThumbnailKey(record.userId, record.id));
     if (!(await this.files.remove(record.id))) throw new ConflictException('File changed while it was being deleted; try again');
-  }
-
-  /** Removes every version and delete marker of exactly this key (and nothing that merely shares its prefix). */
-  private async deleteAllVersions(key: string): Promise<void> {
-    let keyMarker: string | undefined;
-    let versionIdMarker: string | undefined;
-    do {
-      const page = await this.s3.send(
-        new ListObjectVersionsCommand({ Bucket: this.config.bucket, Prefix: key, KeyMarker: keyMarker, VersionIdMarker: versionIdMarker }),
-      );
-      const objects = [...(page.Versions ?? []), ...(page.DeleteMarkers ?? [])]
-        .filter((v) => v.Key === key && v.VersionId)
-        .map((v) => ({ Key: v.Key!, VersionId: v.VersionId! }));
-      if (objects.length) {
-        const result = await this.s3.send(new DeleteObjectsCommand({ Bucket: this.config.bucket, Delete: { Objects: objects, Quiet: true } }));
-        if (result.Errors?.length) {
-          const first = result.Errors[0]!;
-          throw new Error(`S3 could not delete ${first.Key} (${first.VersionId}): ${first.Code}`);
-        }
-      }
-      keyMarker = page.IsTruncated ? page.NextKeyMarker : undefined;
-      versionIdMarker = page.IsTruncated ? page.NextVersionIdMarker : undefined;
-    } while (keyMarker !== undefined || versionIdMarker !== undefined);
   }
 
   /**

@@ -24,6 +24,7 @@ export const testConfig: AppConfig = {
   pendingTtlSeconds: 3 * 24 * 3600,
   ssePollMs: 20,
   logLevel: 'silent',
+  malwareScan: false,
 };
 
 /** A real S3 client with static credentials: signing is offline, so URLs can be inspected. */

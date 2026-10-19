@@ -19,7 +19,7 @@ export class MemoryFileStore implements FileStore {
     let activeUploads = 0;
     let storedBytes = 0;
     for (const r of this.records.values()) {
-      if (r.userId !== userId || r.status === 'aborted') continue;
+      if (r.userId !== userId || r.status === 'aborted' || r.status === 'quarantined') continue;
       storedBytes += r.size;
       if (r.status === 'uploading') activeUploads++;
     }
@@ -54,7 +54,7 @@ export class MemoryFileStore implements FileStore {
   }
   async remove(fileId: string) {
     const r = this.records.get(fileId);
-    if (!r || (r.status !== 'ready' && r.status !== 'failed')) return false;
+    if (!r || (r.status !== 'ready' && r.status !== 'failed' && r.status !== 'quarantined')) return false;
     return this.records.delete(fileId);
   }
   async markAborted(fileId: string, at: string) {
@@ -83,6 +83,17 @@ export class MemoryFileStore implements FileStore {
       const r = this.records.get(fileId)!;
       r.error = error.slice(0, 1000);
       r.processedAt = at;
+      delete r.expiresAt;
+    }
+    return ok;
+  }
+  async markQuarantined(fileId: string, reason: string, at: string) {
+    const ok = await this.move(fileId, ['uploading', 'uploaded', 'processing', 'ready', 'failed', 'quarantined'], 'quarantined', at);
+    if (ok) {
+      const r = this.records.get(fileId)!;
+      r.error = reason.slice(0, 1000);
+      r.processedAt = at;
+      delete r.result;
       delete r.expiresAt;
     }
     return ok;

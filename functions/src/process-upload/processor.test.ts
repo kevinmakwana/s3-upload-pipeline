@@ -202,6 +202,13 @@ describe('processObject', () => {
       const rec2 = await addFile(Buffer.from('abc'), { status: 'aborted' });
       expect((await processObject(deps, { key: rec2.s3Key })).type).toBe('ignored');
     });
+    it('never brings a quarantined file back into service, even if its event arrives after the scan', async () => {
+      const { deps, files, addFile } = setup();
+      const rec = await addFile(Buffer.from('abc'));
+      await files.markQuarantined(rec.id, 'Malware found', 't');
+      expect(await processObject(deps, { key: rec.s3Key })).toEqual({ type: 'ignored', reason: 'file was quarantined' });
+      expect((await files.get(rec.id))?.status).toBe('quarantined');
+    });
   });
 });
 

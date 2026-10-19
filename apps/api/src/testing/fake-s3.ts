@@ -5,6 +5,7 @@ import {
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
+  GetObjectTaggingCommand,
   HeadObjectCommand,
   ListObjectVersionsCommand,
   ListPartsCommand,
@@ -24,6 +25,10 @@ export class FakeS3 {
   /** Every stored version and delete marker, which is what a versioned bucket really keeps. */
   versions: { Key: string; VersionId: string; marker: boolean }[] = [];
   versionPageSize = 1000;
+  /** Object tags by `key#versionId`, as GuardDuty would write them. */
+  tags = new Map<string, Record<string, string>>();
+  /** Make GetObjectTagging fail, as when the API's role may not read tags. */
+  failTagging = false;
   /** Keys that DeleteObjects reports as failed. */
   failDeleteKeys = new Set<string>();
   /** Tamper with the ETag S3 returns from CompleteMultipartUpload. */
@@ -91,6 +96,13 @@ export class FakeS3 {
         NextVersionIdMarker: truncated ? page.at(-1)!.VersionId : undefined,
       };
     }
+    if (command instanceof GetObjectTaggingCommand) {
+      if (this.failTagging) throw Object.assign(new Error('Access Denied'), { name: 'AccessDenied' });
+      const { Key, VersionId } = command.input;
+      if (!this.versions.some((v) => v.Key === Key && v.VersionId === VersionId)) throw Object.assign(new Error('NoSuchVersion'), { name: 'NoSuchVersion' });
+      const tags = this.tags.get(`${Key}#${VersionId}`) ?? {};
+      return { TagSet: Object.entries(tags).map(([Key, Value]) => ({ Key, Value })) };
+    }
     if (command instanceof DeleteObjectsCommand) {
       const Errors: { Key: string; VersionId?: string; Code: string }[] = [];
       for (const { Key, VersionId } of command.input.Delete!.Objects!) {
@@ -111,6 +123,11 @@ export class FakeS3 {
   addVersion(key: string, versionId: string, marker = false) {
     this.versions.push({ Key: key, VersionId: versionId, marker });
     if (!marker) this.objects.set(key, { size: 1 });
+  }
+
+  /** What GuardDuty does after scanning: tag the exact version with its verdict. */
+  tag(key: string, versionId: string, tags: Record<string, string>) {
+    this.tags.set(`${key}#${versionId}`, { ...this.tags.get(`${key}#${versionId}`), ...tags });
   }
 
   /** Version ids currently stored for exactly this key. */
