@@ -30,6 +30,9 @@ new UploadPipelineStack(app, String(app.node.tryGetContext('stackName') ?? 'Uplo
   allowedOrigins: String(app.node.tryGetContext('allowedOrigins') ?? 'http://localhost:5173').split(','),
   certificateArn: app.node.tryGetContext('certificateArn'),
   alarmEmail: app.node.tryGetContext('alarmEmail'),
+  cognito: flag('cognito') ? { selfSignUp: flag('cognitoSelfSignUp') } : undefined,
+  deployWeb: flag('deployWeb'),
+  apiDomain: text('apiDomain'),
   apiMaxTasks: text('apiMaxTasks') === undefined ? undefined : Number(text('apiMaxTasks')),
   env: process.env.CDK_DEFAULT_ACCOUNT
     ? { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION }

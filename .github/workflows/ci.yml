@@ -35,6 +35,8 @@ jobs:
         run: npm run synth
       - name: cdk synth (with the Fargate API)
         run: npm run synth:api
+      - name: cdk synth (API, Cognito and the CloudFront-hosted web app)
+        run: npm run synth:full
 
   integration:
     name: Integration tests (LocalStack)
