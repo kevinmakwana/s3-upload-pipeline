@@ -1,5 +1,8 @@
-/** Lifecycle of a file: uploading -> uploaded -> processing -> ready | failed (or aborted). */
-export const FILE_STATUSES = ['uploading', 'uploaded', 'processing', 'ready', 'failed', 'aborted'] as const;
+/**
+ * Lifecycle of a file: uploading -> uploaded -> processing -> ready | failed (or aborted).
+ * `quarantined` is final: a malware scan found a threat and the stored file was deleted.
+ */
+export const FILE_STATUSES = ['uploading', 'uploaded', 'processing', 'ready', 'failed', 'aborted', 'quarantined'] as const;
 export type FileStatus = (typeof FILE_STATUSES)[number];
 
 export interface ProcessingResult {

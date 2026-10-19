@@ -76,6 +76,7 @@ export async function processObject(deps: ProcessorDeps, ref: ObjectRef, receive
     return { type: 'ignored', reason: 'no matching file record' };
   }
   if (file.status === 'aborted') return { type: 'ignored', reason: 'upload was aborted' };
+  if (file.status === 'quarantined') return { type: 'ignored', reason: 'file was quarantined' };
 
   const idemKey = idempotencyKey(ref);
   const lease = await ledger.begin(idemKey, now(), config.leaseMs);

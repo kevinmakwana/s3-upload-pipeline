@@ -5,6 +5,7 @@ import type { FileRecord } from './records';
  * Status only ever moves forward:
  *   uploading -> uploaded -> processing -> ready | failed      (failed -> processing on retry)
  *   uploading -> aborted
+ *   anything but aborted -> quarantined                         (final)
  * Implementations enforce this atomically, so the API and the worker can race safely
  * (S3's event can reach the worker before the API has acknowledged the upload).
  */
@@ -27,7 +28,7 @@ export interface RecordPage {
 export interface UsageTotals {
   /** Uploads still in progress. */
   activeUploads: number;
-  /** Declared bytes of every record that still holds storage: in progress, uploaded, processing, ready or failed. */
+  /** Declared bytes of every record that still holds storage: in progress, uploaded, processing, ready or failed (not aborted or quarantined). */
   storedBytes: number;
 }
 
@@ -48,7 +49,13 @@ export interface FileStore {
   markReady(fileId: string, result: ProcessingResult, at: string): Promise<boolean>;
   /** uploading|uploaded|processing|failed -> failed. Never overwrites ready or aborted. */
   markFailed(fileId: string, error: string, at: string): Promise<boolean>;
-  /** Deletes the record, but only while it is ready or failed (finished, with no worker holding it). */
+  /**
+   * Any status but aborted -> quarantined, which is final: records why (as the error), drops the
+   * processing result, and no later transition applies. Repeating it is fine. Returns false for an
+   * unknown or aborted file.
+   */
+  markQuarantined(fileId: string, reason: string, at: string): Promise<boolean>;
+  /** Deletes the record, but only while it is ready, failed or quarantined (finished, with no worker holding it). */
   remove(fileId: string): Promise<boolean>;
 }
 
