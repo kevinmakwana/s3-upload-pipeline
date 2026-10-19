@@ -475,6 +475,20 @@ code {
   font-weight: 600;
 }
 
+.foot .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.foot .link:hover {
+  color: var(--ink);
+}
+
 /* ------------------------------------------------------------------ narrow */
 @media (max-width: 640px) {
   .page {
