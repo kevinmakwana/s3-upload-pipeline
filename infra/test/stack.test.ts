@@ -311,4 +311,44 @@ describe('UploadPipelineStack', () => {
     local.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Delete' });
     local.hasResourceProperties('AWS::Lambda::Function', { Environment: { Variables: Match.objectLike({ S3_FORCE_PATH_STYLE: 'true' }) } });
   });
+
+  describe('API monitoring and scaling', () => {
+    it('has no API alarms or scaling when the API is not deployed', () => {
+      t.resourceCountIs('AWS::CloudWatch::Alarm', 3); // DLQ, backlog, worker errors
+      t.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 0);
+    });
+
+    it('alarms on server errors, unhealthy targets, slow responses, CPU and memory, and notifies the alarm topic', () => {
+      const withApi = synth({ deployApi: true });
+      const alarms = Object.values(withApi.findResources('AWS::CloudWatch::Alarm')).map((a) => a.Properties);
+      const byMetric = (name: string) => alarms.filter((a) => a.MetricName === name || JSON.stringify(a.Metrics ?? '').includes(name));
+      for (const metric of ['HTTPCode_Target_5XX_Count', 'HTTPCode_ELB_5XX_Count', 'UnHealthyHostCount', 'TargetResponseTime', 'CPUUtilization', 'MemoryUtilization']) {
+        expect({ metric, alarms: byMetric(metric).length }).toEqual({ metric, alarms: 1 });
+      }
+      withApi.resourceCountIs('AWS::CloudWatch::Alarm', 3 + 6);
+      for (const alarm of alarms) expect(alarm.AlarmActions).toHaveLength(1);
+      // Quiet periods are not outages: missing data must not page anyone.
+      for (const alarm of alarms) expect(alarm.TreatMissingData).toBe('notBreaching');
+    });
+
+    it('scales the service between one and four tasks on CPU, and on requests per task', () => {
+      const withApi = synth({ deployApi: true });
+      withApi.hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', { MinCapacity: 1, MaxCapacity: 4 });
+      const policies = Object.values(withApi.findResources('AWS::ApplicationAutoScaling::ScalingPolicy')).map((p) => p.Properties);
+      const types = policies.map((p) => p.TargetTrackingScalingPolicyConfiguration.PredefinedMetricSpecification.PredefinedMetricType).sort();
+      expect(types).toEqual(['ALBRequestCountPerTarget', 'ECSServiceAverageCPUUtilization']);
+    });
+
+    it('lets the ceiling be changed, and refuses one below the floor', () => {
+      synth({ deployApi: true, apiMaxTasks: 10 }).hasResourceProperties('AWS::ApplicationAutoScaling::ScalableTarget', { MaxCapacity: 10 });
+      expect(() => synth({ deployApi: true, apiMaxTasks: 0 })).toThrow(/apiMaxTasks/);
+      expect(() => synth({ deployApi: true, apiMaxTasks: 2.5 })).toThrow(/apiMaxTasks/);
+    });
+
+    it('does not pin a task count, so a deploy does not undo what autoscaling decided', () => {
+      const withApi = synth({ deployApi: true });
+      const [service] = Object.values(withApi.findResources('AWS::ECS::Service'));
+      expect(service!.Properties.DesiredCount).toBeUndefined();
+    });
+  });
 });
