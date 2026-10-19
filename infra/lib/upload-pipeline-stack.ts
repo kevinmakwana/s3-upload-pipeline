@@ -7,6 +7,7 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
+import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -40,6 +41,8 @@ export interface UploadPipelineProps extends StackProps {
   certificateArn?: string;
   /** Subscribe this address to the alarm topic. */
   alarmEmail?: string;
+  /** Most API tasks autoscaling may run (default 4). The least is one. */
+  apiMaxTasks?: number;
 }
 
 /** Longest the worker may run. Checksumming a 15 GB object streams at roughly 100-300 MB/s. */
@@ -278,6 +281,8 @@ export class UploadPipelineStack extends Stack {
     let apiUrl: string | undefined;
     if (props.deployApi) {
       const authEnvironment = apiAuthEnvironment(props.auth);
+      const apiMaxTasks = props.apiMaxTasks ?? 4;
+      if (!Number.isInteger(apiMaxTasks) || apiMaxTasks < 1) throw new Error(`apiMaxTasks must be a whole number of at least 1, got ${apiMaxTasks}`);
       // No NAT gateway (≈$32/month): tasks sit in public subnets and only the ALB accepts traffic.
       const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 0 });
       const certificate = props.certificateArn
@@ -287,7 +292,6 @@ export class UploadPipelineStack extends Stack {
         vpc,
         cpu: 256,
         memoryLimitMiB: 512,
-        desiredCount: 1,
         minHealthyPercent: 100,
         assignPublicIp: true,
         circuitBreaker: { rollback: true },
@@ -319,6 +323,10 @@ export class UploadPipelineStack extends Stack {
         },
       });
       service.targetGroup.configureHealthCheck({ path: '/health' });
+      // Autoscaling owns the task count: a pinned DesiredCount would reset it on every deploy.
+      (service.service.node.defaultChild as ecs.CfnService).desiredCount = undefined;
+      addApiScaling(service, apiMaxTasks);
+      addApiAlarms(this, service, alarmAction);
       service.taskDefinition.taskRole.addManagedPolicy(apiPolicy);
       apiUrl = `${certificate ? 'https' : 'http'}://${service.loadBalancer.loadBalancerDnsName}`;
       new CfnOutput(this, 'ApiUrl', { value: apiUrl });
@@ -333,6 +341,47 @@ export class UploadPipelineStack extends Stack {
     new CfnOutput(this, 'ApiPolicyArn', { value: apiPolicy.managedPolicyArn });
     new CfnOutput(this, 'AlarmTopicArn', { value: alarmTopic.topicArn });
   }
+}
+
+/**
+ * One task is the floor. Tasks are added when CPU is busy or when requests per task climb; the
+ * request target sits well under the default per-address and per-user rate limits, because those
+ * counters are kept per task (see the README).
+ */
+function addApiScaling(service: ecsPatterns.ApplicationLoadBalancedFargateService, maxCapacity: number): void {
+  const scaling = service.service.autoScaleTaskCount({ minCapacity: 1, maxCapacity });
+  scaling.scaleOnCpuUtilization('Cpu', { targetUtilizationPercent: 60, scaleInCooldown: Duration.minutes(5), scaleOutCooldown: Duration.minutes(1) });
+  scaling.scaleOnRequestCount('Requests', {
+    requestsPerTarget: 3000, // per minute, per task
+    targetGroup: service.targetGroup,
+    scaleInCooldown: Duration.minutes(5),
+    scaleOutCooldown: Duration.minutes(1),
+  });
+}
+
+/** Alarms that say "the API is hurting" without paging for a quiet night (no data is not a breach). */
+function addApiAlarms(scope: Construct, service: ecsPatterns.ApplicationLoadBalancedFargateService, action: cloudwatch.IAlarmAction): void {
+  const make = (id: string, description: string, metric: cloudwatch.IMetric, threshold: number, evaluationPeriods: number, datapointsToAlarm = evaluationPeriods) => {
+    const alarm = new cloudwatch.Alarm(scope, id, {
+      alarmDescription: description,
+      metric,
+      threshold,
+      evaluationPeriods,
+      datapointsToAlarm,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    alarm.addAlarmAction(action);
+  };
+  const five = Duration.minutes(5);
+  const lb = service.loadBalancer.metrics;
+  const tg = service.targetGroup.metrics;
+
+  make('ApiServerErrorsAlarm', 'The API is answering with 5xx errors (a bug or a failing dependency).', tg.httpCodeTarget(elbv2.HttpCodeTarget.TARGET_5XX_COUNT, { period: five, statistic: 'Sum' }), 10, 1);
+  make('ApiLoadBalancerErrorsAlarm', 'The load balancer itself is returning 5xx (no healthy task, or tasks are refusing connections).', lb.httpCodeElb(elbv2.HttpCodeElb.ELB_5XX_COUNT, { period: five, statistic: 'Sum' }), 5, 1);
+  make('ApiUnhealthyTargetsAlarm', 'An API task is failing its health check.', tg.unhealthyHostCount({ period: Duration.minutes(1), statistic: 'Maximum' }), 1, 3);
+  make('ApiSlowResponsesAlarm', 'API responses are slow: p95 time to first byte is over three seconds.', tg.targetResponseTime({ period: five, statistic: 'p95' }), 3, 3);
+  make('ApiHighCpuAlarm', 'API CPU has been above 85% for 15 minutes; autoscaling is at its ceiling or not keeping up.', service.service.metricCpuUtilization({ period: five }), 85, 3);
+  make('ApiHighMemoryAlarm', 'API memory has been above 85% for 15 minutes; the task may be about to be killed.', service.service.metricMemoryUtilization({ period: five }), 85, 3);
 }
 
 /**
