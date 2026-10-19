@@ -9,7 +9,8 @@
     "synth:api": "cdk synth --quiet -c deployApi=true -c jwtIssuer=https://idp.example.com/ -c jwtAudience=upload-api -c jwtJwksUrl=https://idp.example.com/.well-known/jwks.json",
     "deploy:local": "bash scripts/deploy-local.sh",
     "deploy": "cdk deploy --require-approval never -c deployApi=true",
-    "destroy": "cdk destroy"
+    "destroy": "cdk destroy",
+    "synth:full": "cdk synth --quiet -c deployApi=true -c cognito=true -c deployWeb=true -c apiDomain=api.example.com -c certificateArn=arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
   },
   "dependencies": {
     "aws-cdk-lib": "^2.273.0",

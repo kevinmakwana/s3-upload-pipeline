@@ -1,6 +1,8 @@
+import * as path from 'node:path';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
 import { UploadPipelineStack } from '../lib/upload-pipeline-stack';
+import { contentSecurityPolicy, webRuntimeConfig } from '../lib/web-hosting';
 
 const JWT_AUTH = { mode: 'jwt', issuer: 'https://idp.example.com/', audience: 'upload-api', jwksUrl: 'https://idp.example.com/.well-known/jwks.json' } as const;
 
@@ -310,6 +312,167 @@ describe('UploadPipelineStack', () => {
     const local = synth({ local: true });
     local.hasResource('AWS::S3::Bucket', { DeletionPolicy: 'Delete' });
     local.hasResourceProperties('AWS::Lambda::Function', { Environment: { Variables: Match.objectLike({ S3_FORCE_PATH_STYLE: 'true' }) } });
+  });
+
+  describe('Cognito sign-in', () => {
+    const cognito = { selfSignUp: false };
+
+    it('creates a pool with a hosted login and one public client that can only use the authorization code flow', () => {
+      const t = synth({ cognito });
+      t.resourceCountIs('AWS::Cognito::UserPool', 1);
+      t.hasResourceProperties('AWS::Cognito::UserPool', {
+        AdminCreateUserConfig: { AllowAdminCreateUserOnly: true },
+        DeletionProtection: 'ACTIVE',
+        Policies: { PasswordPolicy: Match.objectLike({ MinimumLength: 12 }) },
+      });
+      t.hasResourceProperties('AWS::Cognito::UserPoolClient', {
+        GenerateSecret: false,
+        AllowedOAuthFlows: ['code'],
+        AllowedOAuthFlowsUserPoolClient: true,
+        AllowedOAuthScopes: ['openid', 'email'],
+        CallbackURLs: ['https://app.example.com/'],
+        LogoutURLs: ['https://app.example.com/'],
+        PreventUserExistenceErrors: 'ENABLED',
+        EnableTokenRevocation: true,
+      });
+      t.hasResourceProperties('AWS::Cognito::UserPoolDomain', { Domain: { 'Fn::Join': ['', ['test-', { Ref: 'AWS::AccountId' }]] } });
+    });
+
+    it('only lets people sign themselves up when asked to', () => {
+      synth({ cognito: { selfSignUp: true } }).hasResourceProperties('AWS::Cognito::UserPool', { AdminCreateUserConfig: { AllowAdminCreateUserOnly: false } });
+    });
+
+    it('points the API at the pool: issuer, client id as audience, and the pool JWKS', () => {
+      const t = synth({ deployApi: true, cognito, auth: undefined });
+      const env = apiEnvironment(t);
+      expect(env.AUTH_MODE).toBe('jwt');
+      expect(JSON.stringify(env.JWT_ISSUER)).toContain('AuthPool');
+      expect(JSON.stringify(env.JWT_ISSUER)).toContain('https://');
+      expect(JSON.stringify(env.JWT_AUDIENCE)).toContain('AuthPoolWebClient');
+      expect(JSON.stringify(env.JWT_JWKS_URL)).toContain('/.well-known/jwks.json');
+      expect(env.ALLOW_INSECURE_DEMO_AUTH).toBeUndefined();
+    });
+
+    it('is not combined with an auth choice of your own, and does not exist in LocalStack', () => {
+      expect(() => synth({ deployApi: true, cognito, auth: JWT_AUTH })).toThrow(/Choose one/);
+      expect(() => synth({ local: true, cognito })).toThrow(/LocalStack/);
+    });
+
+    it('rejects stack ids Cognito would refuse in its domain', () => {
+      const app = new App({ context: { 'aws:cdk:bundling-stacks': [] } });
+      expect(() => new UploadPipelineStack(app, 'MyCognitoApp', { local: false, deployApi: false, allowedOrigins: [], cognito })).toThrow(/does not allow/);
+    });
+
+    it('creates nothing when not asked', () => {
+      t.resourceCountIs('AWS::Cognito::UserPool', 0);
+    });
+  });
+
+  describe('web hosting', () => {
+    const web = { deployWeb: true, apiDomain: 'api.example.com', webDistPath: path.join(__dirname, 'fixtures', 'web-dist') };
+
+    it('serves a private bucket through CloudFront over HTTPS only, with single-page-app fallbacks', () => {
+      const t = synth(web);
+      t.hasResourceProperties('AWS::S3::Bucket', { PublicAccessBlockConfiguration: Match.objectLike({ BlockPublicAcls: true, RestrictPublicBuckets: true }) });
+      t.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+      t.hasResourceProperties('AWS::CloudFront::Distribution', {
+        DistributionConfig: Match.objectLike({
+          DefaultRootObject: 'index.html',
+          DefaultCacheBehavior: Match.objectLike({ ViewerProtocolPolicy: 'redirect-to-https' }),
+          CustomErrorResponses: [
+            Match.objectLike({ ErrorCode: 403, ResponseCode: 200, ResponsePagePath: '/index.html' }),
+            Match.objectLike({ ErrorCode: 404, ResponseCode: 200, ResponsePagePath: '/index.html' }),
+          ],
+        }),
+      });
+    });
+
+    it('never caches the shell or the config, so a new deployment shows at once', () => {
+      const t = synth(web);
+      const [dist] = Object.values(t.findResources('AWS::CloudFront::Distribution'));
+      const behaviors = dist!.Properties.DistributionConfig.CacheBehaviors as { PathPattern: string; CachePolicyId: string }[];
+      expect(behaviors.map((b) => b.PathPattern).sort()).toEqual(['/config.json', '/index.html']);
+      // The managed CachingDisabled policy.
+      for (const b of behaviors) expect(b.CachePolicyId).toBe('4135ea2d-6df8-44a3-9df3-4b5a84be39ad');
+    });
+
+    it('sends security headers, including a policy that allows only our API, S3 and Cognito', () => {
+      const t = synth(web);
+      t.hasResourceProperties('AWS::CloudFront::ResponseHeadersPolicy', {
+        ResponseHeadersPolicyConfig: Match.objectLike({
+          SecurityHeadersConfig: Match.objectLike({
+            StrictTransportSecurity: Match.objectLike({ IncludeSubdomains: true }),
+            FrameOptions: { FrameOption: 'DENY', Override: true },
+            ContentTypeOptions: { Override: true },
+          }),
+        }),
+      });
+      const policy = contentSecurityPolicy('api.example.com');
+      expect(policy).toContain("default-src 'none'");
+      expect(policy).toContain("script-src 'self'");
+      expect(policy).toContain('connect-src \'self\' https://api.example.com https://*.amazonaws.com https://*.amazoncognito.com');
+      expect(policy).toContain("frame-ancestors 'none'");
+      expect(policy).not.toContain('unsafe-eval');
+      expect(policy).not.toMatch(/script-src[^;]*unsafe-inline/);
+    });
+
+    it('lets the hosted page call the API and put parts to S3 (CORS), without listing it by hand', () => {
+      const t = synth({ ...web, deployApi: true, certificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc' });
+      const origins = (t.findResources('AWS::S3::Bucket') as Record<string, { Properties: { CorsConfiguration?: { CorsRules: { AllowedOrigins: unknown[] }[] } } }>);
+      const upload = Object.values(origins).find((b) => b.Properties.CorsConfiguration)!;
+      const allowed = JSON.stringify(upload.Properties.CorsConfiguration!.CorsRules[0]!.AllowedOrigins);
+      expect(allowed).toContain('https://app.example.com');
+      expect(allowed).toContain('Distribution');
+      expect(JSON.stringify(apiEnvironment(t).CORS_ORIGINS)).toContain('Distribution');
+    });
+
+    it('deploys the app, replacing what was there, and refreshes the CDN', () => {
+      const t = synth(web);
+      t.resourceCountIs('Custom::CDKBucketDeployment', 1);
+      t.hasResourceProperties('Custom::CDKBucketDeployment', { Prune: true, DistributionPaths: ['/*'] });
+    });
+
+    it('writes a config.json that says where the API is and how to sign in', () => {
+      expect(webRuntimeConfig('api.example.com')).toEqual({ apiUrl: 'https://api.example.com', auth: { mode: 'demo' } });
+      expect(webRuntimeConfig('api.example.com', { url: 'https://login.example.com', clientId: 'c1' })).toEqual({
+        apiUrl: 'https://api.example.com',
+        auth: {
+          mode: 'oidc',
+          authorizeUrl: 'https://login.example.com/oauth2/authorize',
+          tokenUrl: 'https://login.example.com/oauth2/token',
+          logoutUrl: 'https://login.example.com/logout',
+          clientId: 'c1',
+          scope: 'openid email',
+        },
+      });
+    });
+
+    it('fills the real login address and client id into config.json when Cognito is on', () => {
+      const t = synth({ ...web, cognito: { selfSignUp: false } });
+      const [deployment] = Object.values(t.findResources('Custom::CDKBucketDeployment'));
+      const markers = JSON.stringify(deployment!.Properties.SourceMarkers);
+      expect(markers).toContain('/oauth2/authorize');
+      expect(markers).toContain('/oauth2/token');
+      expect(markers).toContain('/logout');
+      expect(markers).toContain('AuthPoolWebClient');
+    });
+
+    it('allows the hosted page to complete a Cognito sign-in', () => {
+      const t = synth({ ...web, cognito: { selfSignUp: false } });
+      const [client] = Object.values(t.findResources('AWS::Cognito::UserPoolClient'));
+      expect(JSON.stringify(client!.Properties.CallbackURLs)).toContain('Distribution');
+    });
+
+    it('needs an API host name, and an HTTPS certificate when it also deploys the API', () => {
+      expect(() => synth({ deployWeb: true, webDistPath: web.webDistPath })).toThrow(/apiDomain/);
+      expect(() => synth({ ...web, deployApi: true })).toThrow(/certificateArn/);
+      expect(() => synth({ ...web, apiDomain: 'https://api.example.com' })).toThrow(/bare host name/);
+    });
+
+    it('is not available in LocalStack, and adds nothing when not asked', () => {
+      expect(() => synth({ ...web, local: true })).toThrow(/LocalStack/);
+      t.resourceCountIs('AWS::CloudFront::Distribution', 0);
+    });
   });
 
   describe('API monitoring and scaling', () => {

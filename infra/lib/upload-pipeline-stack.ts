@@ -1,5 +1,5 @@
 import * as path from 'node:path';
-import { Aws, CfnOutput, Duration, RemovalPolicy, Stack, type StackProps } from 'aws-cdk-lib';
+import { Aws, CfnOutput, Duration, RemovalPolicy, Stack, Token, type StackProps } from 'aws-cdk-lib';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -19,6 +19,8 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as subs from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 import type { Construct } from 'constructs';
+import { UserPoolAuth } from './user-pool';
+import { WebHosting, webRuntimeConfig } from './web-hosting';
 
 /**
  * How the API authenticates callers. `jwt` verifies bearer tokens from your identity provider.
@@ -37,6 +39,17 @@ export interface UploadPipelineProps extends StackProps {
   allowedOrigins: string[];
   /** Required when `deployApi` is on: the API container fails closed without an auth choice. */
   auth?: ApiAuth;
+  /**
+   * Create a Cognito user pool with a hosted login page and have the API verify its tokens, instead
+   * of passing `auth`. `selfSignUp` lets anyone register; leave it off to add users yourself.
+   */
+  cognito?: { selfSignUp: boolean };
+  /** Host the built web app on S3 + CloudFront (HTTPS). */
+  deployWeb?: boolean;
+  /** Where the built web app is (default apps/web/dist). Run `npm run build` first. */
+  webDistPath?: string;
+  /** Host name the API is served from, such as api.example.com. Needed with `deployWeb`: point a CNAME at the load balancer. */
+  apiDomain?: string;
   /** ACM certificate for the ALB's HTTPS listener (recommended; the browser UI is usually HTTPS). */
   certificateArn?: string;
   /** Subscribe this address to the alarm topic. */
@@ -55,6 +68,27 @@ export class UploadPipelineStack extends Stack {
     super(scope, id, props);
     const { local } = props;
     const removal = local ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN;
+    if (local && (props.cognito || props.deployWeb)) {
+      throw new Error('Cognito and CloudFront are not available in LocalStack; deploy these to AWS');
+    }
+    if (props.cognito && props.auth) throw new Error('Choose one: cognito creates the API auth settings, so do not also pass jwt or demo auth');
+    if (props.deployWeb) {
+      if (!props.apiDomain) throw new Error('deployWeb needs apiDomain (-c apiDomain=api.example.com): the page is HTTPS, so it can only call an HTTPS API');
+      if (props.deployApi && !props.certificateArn) {
+        throw new Error('deployWeb with deployApi needs certificateArn for apiDomain: browsers block an HTTPS page from calling an HTTP API');
+      }
+    }
+
+    // ------------------------------------------------------------ web hosting
+    const web = props.deployWeb
+      ? new WebHosting(this, 'Web', {
+          distPath: props.webDistPath ?? path.join(repoRoot, 'apps', 'web', 'dist'),
+          apiDomain: props.apiDomain!,
+          removalPolicy: removal,
+        })
+      : undefined;
+    // The page's own address may call the API and PUT parts to S3.
+    const allowedOrigins = web ? [...props.allowedOrigins, web.origin] : props.allowedOrigins;
 
     // ---------------------------------------------------------------- storage
     // A fixed name lets the queue policy reference the bucket without a circular dependency,
@@ -77,7 +111,7 @@ export class UploadPipelineStack extends Stack {
       cors: [
         {
           allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET, s3.HttpMethods.HEAD],
-          allowedOrigins: props.allowedOrigins,
+          allowedOrigins,
           allowedHeaders: ['*'],
           exposedHeaders: ['ETag', 'x-amz-checksum-sha256'],
           maxAge: 3000,
@@ -234,6 +268,14 @@ export class UploadPipelineStack extends Stack {
     });
     errorsAlarm.addAlarmAction(alarmAction);
 
+    // ---------------------------------------------------------------- sign-in
+    const userPool = props.cognito
+      ? new UserPoolAuth(this, 'Auth', { name: id, origins: allowedOrigins, selfSignUp: props.cognito.selfSignUp, removalPolicy: removal })
+      : undefined;
+    const auth: ApiAuth | undefined = userPool
+      ? { mode: 'jwt', issuer: userPool.issuer, audience: userPool.audience, jwksUrl: userPool.jwksUrl }
+      : props.auth;
+
     // -------------------------------------------------------------------- API
     // What the API's identity needs and nothing more. Attach it to any role you run the API under.
     const apiPolicy = new iam.ManagedPolicy(this, 'ApiPolicy', {
@@ -280,7 +322,7 @@ export class UploadPipelineStack extends Stack {
 
     let apiUrl: string | undefined;
     if (props.deployApi) {
-      const authEnvironment = apiAuthEnvironment(props.auth);
+      const authEnvironment = apiAuthEnvironment(auth);
       const apiMaxTasks = props.apiMaxTasks ?? 4;
       if (!Number.isInteger(apiMaxTasks) || apiMaxTasks < 1) throw new Error(`apiMaxTasks must be a whole number of at least 1, got ${apiMaxTasks}`);
       // No NAT gateway (≈$32/month): tasks sit in public subnets and only the ALB accepts traffic.
@@ -307,7 +349,7 @@ export class UploadPipelineStack extends Stack {
           environment: {
             BUCKET_NAME: bucket.bucketName,
             TABLE_NAME: table.tableName,
-            CORS_ORIGINS: props.allowedOrigins.join(','),
+            CORS_ORIGINS: allowedOrigins.join(','),
             PORT: '3001',
             // Don't rely on the platform injecting it: signing and the SDK need the right region.
             AWS_REGION: Aws.REGION,
@@ -331,6 +373,9 @@ export class UploadPipelineStack extends Stack {
       apiUrl = `${certificate ? 'https' : 'http'}://${service.loadBalancer.loadBalancerDnsName}`;
       new CfnOutput(this, 'ApiUrl', { value: apiUrl });
     }
+
+    // The web app learns where the API is and how to sign in from /config.json, not from its build.
+    web?.publish(webRuntimeConfig(props.apiDomain!, userPool && { url: userPool.loginUrl, clientId: userPool.client.userPoolClientId }));
 
     // ---------------------------------------------------------------- outputs
     new CfnOutput(this, 'BucketName', { value: bucket.bucketName });
@@ -397,6 +442,6 @@ function apiAuthEnvironment(auth: ApiAuth | undefined): Record<string, string> {
   }
   if (auth.mode === 'header') return { AUTH_MODE: 'header', ALLOW_INSECURE_DEMO_AUTH: 'true' };
   if (!auth.issuer || !auth.audience) throw new Error('JWT auth needs both an issuer and an audience');
-  if (!/^https:\/\//.test(auth.jwksUrl)) throw new Error('The JWKS URL must be an https URL');
+  if (!Token.isUnresolved(auth.jwksUrl) && !/^https:\/\//.test(auth.jwksUrl)) throw new Error('The JWKS URL must be an https URL');
   return { AUTH_MODE: 'jwt', JWT_ISSUER: auth.issuer, JWT_AUDIENCE: auth.audience, JWT_JWKS_URL: auth.jwksUrl };
 }
