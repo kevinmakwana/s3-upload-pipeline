@@ -32,6 +32,7 @@ new UploadPipelineStack(app, String(app.node.tryGetContext('stackName') ?? 'Uplo
   alarmEmail: app.node.tryGetContext('alarmEmail'),
   cognito: flag('cognito') ? { selfSignUp: flag('cognitoSelfSignUp') } : undefined,
   deployWeb: flag('deployWeb'),
+  malwareScan: flag('malwareScan'),
   apiDomain: text('apiDomain'),
   apiMaxTasks: text('apiMaxTasks') === undefined ? undefined : Number(text('apiMaxTasks')),
   env: process.env.CDK_DEFAULT_ACCOUNT
