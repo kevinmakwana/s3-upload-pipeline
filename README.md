@@ -19,7 +19,7 @@ It runs entirely on your machine against [LocalStack](https://www.localstack.clo
 - **Integrity end to end.** Every part carries a SHA-256 that S3 itself verifies. When completing, the API rechecks the part list, then compares the final ETag and composite SHA-256 with values recomputed from the parts, and deletes the object if they disagree.
 - **Async processing.** `ObjectCreated` → SQS → Lambda. The worker streams the object to compute a SHA-256, sniffs the real content type, reads image dimensions and writes a thumbnail, then records the result.
 - **Safe to retry.** Processing is idempotent per `object key + version`, backed by a DynamoDB lease, so duplicate deliveries do no extra work and a crashed worker's lease simply expires. Failures retry, then land in a DLQ that raises a CloudWatch alarm.
-- **Live status.** A file moves through `uploading → uploaded → processing → ready | failed`, pushed to the UI over server-sent events.
+- **Live status.** A file moves through `uploading → uploaded → processing → ready | failed`, pushed to the UI over server-sent events. With malware scanning on, an infected file ends as `quarantined` instead (see [Malware scanning](#malware-scanning)).
 
 ## Architecture
 
@@ -102,7 +102,7 @@ The web app mirrors this with `VITE_AUTH_MODE`. In `bearer` mode it calls `windo
 </script>
 ```
 
-This repository does not include a login flow or an identity provider; you bring your own.
+On AWS you can bring your own identity provider or let the stack create a Cognito user pool (see [Sign-in with Cognito](#sign-in-with-cognito)). The web app can also sign users in itself: when its `/config.json` has an `oidc` section it runs the authorization code flow with PKCE against the hosted login page, sends the **ID token** to the API (its audience is the app client, which is what the API checks), refreshes it shortly before it expires, and shows a *Sign out* button. Tokens are kept in `sessionStorage`, so they disappear with the tab; the CloudFront deployment's Content-Security-Policy is what keeps foreign scripts away from them.
 
 ## Quick start (LocalStack, no AWS account)
 
@@ -162,9 +162,10 @@ Environment variables for the API (the quick start writes `.env.local` for you; 
 | `RATE_LIMIT_INIT_PER_MINUTE` | 30 | Uploads one credential may start per minute |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` or `silent` |
 | `TRUST_PROXY_HOPS` | 0 | Proxies in front of the API whose `X-Forwarded-For` to trust. The AWS stack sets `1` for its load balancer |
+| `MALWARE_SCAN` | unset | `true` when the stack scans uploads: downloads then wait for a clean GuardDuty verdict. The stack sets it; leave it off for LocalStack |
 | `ALLOW_INSECURE_DEMO_AUTH` | unset | Set to `true` to let `AUTH_MODE=header` start with `NODE_ENV=production`. Do not |
 
-Web app build-time variables: `VITE_API_URL` (API base URL) and `VITE_AUTH_MODE` (`demo`, the default, or `bearer`).
+Web app: `VITE_API_URL` (API base URL) and `VITE_AUTH_MODE` (`demo`, the default, or `bearer`) apply at build time. A hosted deployment publishes `/config.json` instead (`apiUrl`, and `auth` as `{"mode":"demo"}` or an `oidc` section), which wins over the build-time values, so one build serves any deployment. A `config.json` that is present but invalid stops the app with a message instead of guessing.
 
 Concurrency is a setting in the UI (1 to 16 parallel parts, remembered in `localStorage`). Allowed types live in [`packages/core/src/validation.ts`](packages/core/src/validation.ts).
 
@@ -181,8 +182,8 @@ All routes except `/health` require authentication: a bearer token in `jwt` mode
 | `DELETE /uploads/:id` | Abort and free the stored parts |
 | `GET /files?limit=&cursor=` | One page of your files, newest first (`limit` 1 to 100, default 50). The response is `{ files, nextCursor? }`; pass `nextCursor` back as `cursor` for the next page. Aborted uploads are left out. A malformed cursor is a `400` |
 | `GET /files/:id` | File status and processing result |
-| `GET /files/:id/download` | A short-lived presigned link (5 minutes by default) to the original file, served as an attachment under its own name and pinned to the verified version. Only for `ready` files; anything else is a `409` |
-| `DELETE /files/:id` | Permanently delete a `ready` or `failed` file: every stored version of the object and of its thumbnail, then the record. A file that is uploading or being processed is a `409`. If S3 refuses, the record is kept and the request can be retried |
+| `GET /files/:id/download` | A short-lived presigned link (5 minutes by default) to the original file, served as an attachment under its own name and pinned to the verified version. Only for `ready` files; anything else is a `409`. With malware scanning on, also a `409` until the exact stored version carries a clean verdict |
+| `DELETE /files/:id` | Permanently delete a `ready`, `failed` or `quarantined` file: every stored version of the object and of its thumbnail, then the record. A file that is uploading or being processed is a `409`. If S3 refuses, the record is kept and the request can be retried |
 | `GET /files/stream` | SSE stream of the newest page (`{ files, nextCursor? }`); older pages come from `GET /files` |
 
 ## Testing
@@ -191,6 +192,7 @@ All routes except `/health` require authentication: a bearer token in `jwt` mode
 npm test                  # unit tests
 npm run typecheck
 npm run test:integration  # needs LocalStack up and deployed (see quick start)
+npm run smoke:aws         # real AWS only, on purpose (see Smoke test on AWS)
 ```
 
 - **Unit** covers part and part-count planning at the S3 limits, key and prefix scoping, presign scoping (the signed URL's path, upload id, part number, expiry and signed headers), resume reconciliation, the upload engine (concurrency, backoff, pause, resume, restart when the upload expired), the worker's idempotency and failure handling, IAM least privilege on the synthesized template, IndexedDB persistence, and the HTTP API including cross-user isolation.
@@ -214,13 +216,48 @@ npx cdk deploy -c deployApi=true \
 
 `deployApi` needs an auth choice: the three `jwt*` values, which become `AUTH_MODE=jwt` and `JWT_*` on the container. Without them `cdk deploy` stops with an error rather than shipping an API that would refuse to start. (`-c insecureDemoAuth=true` exists for throwaway experiments; it lets anyone act as any user.)
 
-The outputs include the API URL. Build the web app against it and host the static files anywhere (for example S3 and CloudFront); hosting is deliberately not part of the stack:
+The outputs include the API URL. You can host the static files anywhere (build with `VITE_API_URL=https://api.example.com npm run build -w @s3up/web`), or let the stack do it (see [Hosting the web app](#hosting-the-web-app)). Browsers on an HTTPS site cannot call an HTTP API, so pass `certificateArn` for anything real. With your own hosting, build with `VITE_AUTH_MODE=bearer` and provide `window.s3upAuth` (see [Authentication](#authentication)).
 
-```bash
-VITE_API_URL=https://api.example.com npm run build -w @s3up/web
-```
+Everything below is optional and off by default. Each is a CDK context value, and `npm run synth:full` (run in CI) synthesizes all of them together:
 
-Browsers on an HTTPS site cannot call an HTTP API, so pass `certificateArn` for anything real. Build the web app with `VITE_AUTH_MODE=bearer` and provide `window.s3upAuth` (see [Authentication](#authentication)).
+| Context | Adds |
+| --- | --- |
+| `-c cognito=true` (`-c cognitoSelfSignUp=true`) | A Cognito user pool, hosted login and app client; the API's JWT settings point at it. Use instead of the three `jwt*` values |
+| `-c deployWeb=true -c apiDomain=api.example.com` | The web app on S3 and CloudFront |
+| `-c malwareScan=true` | GuardDuty malware scanning of every upload, with quarantine |
+| `-c apiMaxTasks=N` | Ceiling for API autoscaling (default 4) |
+
+Cognito, CloudFront and GuardDuty do not exist in LocalStack, so the stack refuses them with `-c local=true`.
+
+### Sign-in with Cognito
+
+`-c cognito=true` creates a user pool (email sign-in, 12-character passwords, deletion protection on AWS), a hosted login page on `<stack>-<account>.auth.<region>.amazoncognito.com`, and one public app client that can use only the authorization code flow with the `openid` and `email` scopes. The API is deployed with `AUTH_MODE=jwt`, the pool as issuer, the client id as audience and the pool's JWKS, so nothing needs passing to it by hand. Accounts are created by you (Cognito console or CLI) unless you add `-c cognitoSelfSignUp=true`, which lets anyone register: think about that before turning it on, together with the per-user quotas in the table above.
+
+Callback and sign-out URLs are your `allowedOrigins` (each with a trailing `/`) plus the CloudFront address when the web app is hosted. The default origin is `http://localhost:5173`, which Cognito accepts for development; pass only your real origin to drop it. Cognito's tokens are signed with RS256 and the API accepts nothing else. Access tokens have no `aud` claim, so the web app sends the ID token.
+
+### Hosting the web app
+
+`-c deployWeb=true -c apiDomain=api.example.com` serves the built app (run `npm run build -w @s3up/web` first) from a private bucket through CloudFront with origin access control:
+
+- HTTPS only (HTTP redirects), HTTP/2 and 3, compression, price class 100, and single-page-app fallbacks (403 and 404 answer with `index.html`).
+- `index.html` and `config.json` are never cached; everything else is cached for good (file names are hashed), and each deployment invalidates the CDN.
+- Security headers: HSTS for two years, `nosniff`, `X-Frame-Options: DENY`, a strict referrer policy and a Content-Security-Policy that allows scripts only from the app itself and connections only to the API host, S3 and Cognito.
+- The distribution's address is added to the upload bucket's CORS rules, to the API's allowed origins and to the Cognito client's callback URLs automatically.
+- `config.json` is generated by the stack from the real API host and Cognito values.
+
+`apiDomain` is the host name the API answers on; point a CNAME at the load balancer and make sure `certificateArn` covers it. The page is HTTPS, so the stack refuses `deployWeb` together with `deployApi` unless `certificateArn` is given. Without a custom domain on the distribution, CloudFront's own certificate allows TLS 1.0 clients; attach your own domain and certificate for a TLS 1.2 minimum.
+
+### Malware scanning
+
+`-c malwareScan=true` turns on [GuardDuty Malware Protection for S3](https://docs.aws.amazon.com/guardduty/latest/ug/gdu-malware-protection-s3.html) for everything under `uploads/` (it handles objects far larger than a Lambda could scan, and needs no GuardDuty detector). Costs are per GB scanned, so look at the GuardDuty pricing page first.
+
+1. GuardDuty scans each new object and tags the exact version with `GuardDutyMalwareScanStatus` (`NO_THREATS_FOUND`, `THREATS_FOUND`, `UNSUPPORTED`, `ACCESS_DENIED` or `FAILED`).
+2. The result also arrives on EventBridge. A handler checks it, and for `THREATS_FOUND` marks the file **`quarantined`** first (final: nothing moves it back), then deletes every stored version of the object and its thumbnail. If the delete fails the event is retried with the file already unreachable; after the retries it lands in a dead-letter queue that raises an alarm. A separate rule publishes every threat to the alarm topic.
+3. The API serves a download only when the tag on the version it would hand out says `NO_THREATS_FOUND`. No tag yet means the scan is still running (`409`, try again in a minute); any other verdict is a `409` too, and **files GuardDuty cannot scan (for example password-protected archives) cannot be downloaded**. If the tags cannot be read, the request fails rather than letting the file through.
+
+The worker still processes a file while it is being scanned, so an infected image may briefly get a thumbnail; quarantine deletes it. A quarantined file stays in the list with the reason until its owner deletes the record, and it no longer counts against the storage quota.
+
+GuardDuty needs the bucket to send events to EventBridge; the stack enables that in the template itself, next to the queue notification, so CloudFormation does not drift.
 
 ### Deploying from GitHub Actions with OIDC
 
@@ -243,7 +280,22 @@ Browsers on an HTTPS site cannot call an HTTP API, so pass `certificateArn` for 
    ```
 3. Give the role permission to assume the CDK bootstrap roles (`sts:AssumeRole` on `arn:aws:iam::<ACCOUNT_ID>:role/cdk-*`), which keeps its own permissions tiny.
 4. In the repository settings, create an environment named `aws`, then set the variables `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION` and `ENABLE_AWS_DEPLOY=true`.
-5. Run **Deploy to AWS (manual)** from the Actions tab and fill in the allowed origins and the JWT issuer, audience and JWKS URL.
+5. Run **Deploy to AWS (manual)** from the Actions tab and fill in the allowed origins and either the JWT issuer, audience and JWKS URL or the `cognito` option. The other options above are checkboxes there too; with `deploy_web` the workflow builds the web app first.
+
+### Smoke test on AWS
+
+LocalStack is not AWS: it does not enforce IAM and only imitates S3. `npm run smoke:aws` runs a short end-to-end check against a stack that is really deployed, using the real API code in-process:
+
+```bash
+cd infra && npx cdk deploy -c deployApi=true ... --outputs-file ../cdk-outputs.aws.json && cd ..
+AWS_REGION=us-east-1 npm run smoke:aws
+```
+
+It uploads an 11 MiB file in three parts and checks the worker's SHA-256 and a byte-for-byte download, makes a thumbnail from a PNG, and deletes a file and checks its link dies. It creates a throwaway IAM role that carries **only the stack's `ApiPolicy`**, assumes it, and runs the API as that role, so a permission the API needs but the policy lacks fails here instead of on the first real upload (set `SMOKE_FULL_ACCESS=true` to skip this). The role is deleted afterwards. With `SMOKE_MALWARE=true` (stack deployed with `-c malwareScan=true`) it also uploads the harmless [EICAR test file](https://www.eicar.org/download-anti-malware-testfile/) and expects it to be quarantined, and checks downloads wait for a clean verdict; GuardDuty can take a few minutes. Files it creates are deleted at the end.
+
+The calling identity needs `iam:CreateRole`, `AttachRolePolicy`, `DetachRolePolicy` and `DeleteRole` (on `role/s3up-smoke-*`), `sts:AssumeRole` on that role, and read access to the stack's resources. There is also a manual **Smoke test on AWS** workflow (disabled unless `ENABLE_AWS_DEPLOY=true`, like the deploy one) that reads the outputs from CloudFormation.
+
+It has not been run in CI against a real account for you: that needs your account, so the first run is yours.
 
 ### Cost notes
 
@@ -252,7 +304,9 @@ Rough figures for `us-east-1`; prices change, so check the AWS pricing pages bef
 - **While the API runs on Fargate, the baseline is roughly $30 to $35 a month**: the load balancer is the largest part (about $16 plus public IPv4 addresses), then a 0.25 vCPU / 0.5 GB task (about $9). There is no NAT gateway; tasks sit in public subnets and only the load balancer accepts traffic. Run `npx cdk destroy` when you are done experimenting.
 - **Per upload it is pennies**: S3 storage (about $0.023 per GB-month) and request charges for a few hundred parts, a Lambda run of a minute or two on 1.5 GB ARM, and on-demand DynamoDB and SQS at trivial volume. Data transferred into S3 is free.
 - **Abandoned uploads cost money until aborted.** The bucket's lifecycle rule aborts incomplete multipart uploads after 2 days, which is also how long a paused upload can be resumed.
-- Three CloudWatch alarms (DLQ not empty, queue backlog over an hour, worker errors) cost a few cents a month.
+- Three CloudWatch alarms (DLQ not empty, queue backlog over an hour, worker errors) cost a few cents a month. With the API there are six more (5xx from the tasks and from the load balancer, unhealthy targets, slow p95, CPU, memory), all notifying the same SNS topic. Autoscaling adds tasks (up to `apiMaxTasks`) at roughly $9 a month each while they run.
+- The in-memory rate limits are kept per API task, so with several tasks a client can make up to that many times the configured rate. The autoscaling request target sits well under the default limits for that reason.
+- CloudFront and its bucket cost cents at low traffic; GuardDuty malware scanning is billed per GB scanned.
 
 ### Logging
 
@@ -283,7 +337,7 @@ infra/           AWS CDK app (TypeScript)
 packages/core    Part planning, validation, reconciliation, the upload engine
 packages/data    DynamoDB file store and idempotency ledger (+ in-memory twin)
 scripts/         File generator, soak test, env writer
-tests/           LocalStack integration suite
+tests/           LocalStack integration suite, real-AWS smoke test, repository checks
 ```
 
 ## License
