@@ -4,6 +4,9 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as events from 'aws-cdk-lib/aws-events';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as guardduty from 'aws-cdk-lib/aws-guardduty';
 import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as ecs from 'aws-cdk-lib/aws-ecs';
 import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
@@ -44,6 +47,11 @@ export interface UploadPipelineProps extends StackProps {
    * of passing `auth`. `selfSignUp` lets anyone register; leave it off to add users yourself.
    */
   cognito?: { selfSignUp: boolean };
+  /**
+   * Scan every upload with GuardDuty Malware Protection for S3. Infected files are quarantined and
+   * deleted, and the API serves a download only after a clean verdict. Not available in LocalStack.
+   */
+  malwareScan?: boolean;
   /** Host the built web app on S3 + CloudFront (HTTPS). */
   deployWeb?: boolean;
   /** Where the built web app is (default apps/web/dist). Run `npm run build` first. */
@@ -68,8 +76,8 @@ export class UploadPipelineStack extends Stack {
     super(scope, id, props);
     const { local } = props;
     const removal = local ? RemovalPolicy.DESTROY : RemovalPolicy.RETAIN;
-    if (local && (props.cognito || props.deployWeb)) {
-      throw new Error('Cognito and CloudFront are not available in LocalStack; deploy these to AWS');
+    if (local && (props.cognito || props.deployWeb || props.malwareScan)) {
+      throw new Error('Cognito, CloudFront and GuardDuty malware scanning are not available in LocalStack; deploy these to AWS');
     }
     if (props.cognito && props.auth) throw new Error('Choose one: cognito creates the API auth settings, so do not also pass jwt or demo auth');
     if (props.deployWeb) {
@@ -268,6 +276,11 @@ export class UploadPipelineStack extends Stack {
     });
     errorsAlarm.addAlarmAction(alarmAction);
 
+    // --------------------------------------------------------- malware scanning
+    if (props.malwareScan) {
+      this.addMalwareScanning({ bucket, bucketName, table, alarmTopic, alarmAction });
+    }
+
     // ---------------------------------------------------------------- sign-in
     const userPool = props.cognito
       ? new UserPoolAuth(this, 'Auth', { name: id, origins: allowedOrigins, selfSignUp: props.cognito.selfSignUp, removalPolicy: removal })
@@ -320,6 +333,17 @@ export class UploadPipelineStack extends Stack {
       ],
     });
 
+    if (props.malwareScan) {
+      apiPolicy.addStatements(
+        new iam.PolicyStatement({
+          sid: 'ReadScanVerdicts',
+          // Where GuardDuty writes its verdict. The API serves a download only after reading a clean one.
+          actions: ['s3:GetObjectTagging', 's3:GetObjectVersionTagging'],
+          resources: [bucket.arnForObjects('uploads/*')],
+        }),
+      );
+    }
+
     let apiUrl: string | undefined;
     if (props.deployApi) {
       const authEnvironment = apiAuthEnvironment(auth);
@@ -356,6 +380,7 @@ export class UploadPipelineStack extends Stack {
             // The ALB is the one proxy in front of the API: trust its X-Forwarded-For, and no more,
             // so per-address rate limits see real client addresses that clients cannot forge.
             TRUST_PROXY_HOPS: '1',
+            ...(props.malwareScan ? { MALWARE_SCAN: 'true' } : {}),
             ...authEnvironment,
           },
           logDriver: ecs.LogDrivers.awsLogs({
@@ -385,6 +410,155 @@ export class UploadPipelineStack extends Stack {
     new CfnOutput(this, 'WorkerFunctionName', { value: worker.functionName });
     new CfnOutput(this, 'ApiPolicyArn', { value: apiPolicy.managedPolicyArn });
     new CfnOutput(this, 'AlarmTopicArn', { value: alarmTopic.topicArn });
+  }
+
+  /**
+   * GuardDuty scans each object under uploads/ and tags the exact version with its verdict. Its result
+   * event reaches a handler that quarantines infected files; the alarm topic hears about every threat.
+   */
+  private addMalwareScanning(c: {
+    bucket: s3.Bucket;
+    bucketName: string;
+    table: dynamodb.Table;
+    alarmTopic: sns.Topic;
+    alarmAction: cloudwatch.IAlarmAction;
+  }): void {
+    const { bucket, bucketName, table, alarmTopic, alarmAction } = c;
+
+    // GuardDuty hears about uploads through EventBridge. Say so in the template, next to the queue
+    // notification, instead of letting the service edit the bucket behind CloudFormation's back.
+    const cfnBucket = bucket.node.defaultChild as s3.CfnBucket;
+    cfnBucket.notificationConfiguration = {
+      ...cfnBucket.notificationConfiguration,
+      eventBridgeConfiguration: { eventBridgeEnabled: true },
+    };
+
+    // The role GuardDuty assumes; these are the permissions its documentation lists, narrowed to this bucket.
+    const managedRule = `arn:${Aws.PARTITION}:events:${Aws.REGION}:${Aws.ACCOUNT_ID}:rule/DO-NOT-DELETE-AmazonGuardDutyMalwareProtectionS3*`;
+    const role = new iam.Role(this, 'ScanRole', {
+      assumedBy: new iam.ServicePrincipal('malware-protection-plan.guardduty.amazonaws.com'),
+      description: 'Lets GuardDuty Malware Protection read uploads, tag them with the verdict and watch the bucket.',
+    });
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'GuardDutyManageEventRule',
+        actions: ['events:PutRule', 'events:DeleteRule', 'events:PutTargets', 'events:RemoveTargets'],
+        resources: [managedRule],
+        conditions: { StringLike: { 'events:ManagedBy': 'malware-protection-plan.guardduty.amazonaws.com' } },
+      }),
+    );
+    role.addToPolicy(
+      new iam.PolicyStatement({ sid: 'GuardDutyWatchEventRule', actions: ['events:DescribeRule', 'events:ListTargetsByRule'], resources: [managedRule] }),
+    );
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'GuardDutyReadAndTagObjects',
+        actions: ['s3:GetObject', 's3:GetObjectVersion', 's3:GetObjectTagging', 's3:GetObjectVersionTagging', 's3:PutObjectTagging', 's3:PutObjectVersionTagging'],
+        resources: [bucket.arnForObjects('*')],
+      }),
+    );
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'GuardDutyBucketAccess',
+        actions: ['s3:PutBucketNotification', 's3:GetBucketNotification', 's3:ListBucket'],
+        resources: [bucket.bucketArn],
+      }),
+    );
+    role.addToPolicy(
+      new iam.PolicyStatement({
+        sid: 'GuardDutyValidationObject',
+        actions: ['s3:PutObject'],
+        resources: [bucket.arnForObjects('malware-protection-resource-validation-object')],
+      }),
+    );
+
+    const plan = new guardduty.CfnMalwareProtectionPlan(this, 'ScanPlan', {
+      role: role.roleArn,
+      // Only what users upload. Thumbnails are made by the worker from an upload that was already scanned.
+      protectedResource: { s3Bucket: { bucketName, objectPrefixes: ['uploads/'] } },
+      actions: { tagging: { status: 'ENABLED' } },
+    });
+    plan.node.addDependency(role);
+    plan.node.addDependency(bucket);
+
+    const handler = new NodejsFunction(this, 'ScanResultFn', {
+      entry: path.join(repoRoot, 'functions', 'src', 'scan-result', 'handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.seconds(120),
+      logGroup: new logs.LogGroup(this, 'ScanResultLogs', { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
+      environment: { TABLE_NAME: table.tableName, BUCKET_NAME: bucket.bucketName },
+      bundling: { minify: true, sourceMap: true, target: 'node22', externalModules: ['@aws-sdk/*'] },
+    });
+    handler.addToRolePolicy(
+      new iam.PolicyStatement({ sid: 'ScanResultRecords', actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'], resources: [table.tableArn] }),
+    );
+    handler.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'ScanResultListVersions',
+        actions: ['s3:ListBucketVersions'],
+        resources: [bucket.bucketArn],
+        conditions: { StringLike: { 's3:prefix': ['uploads/*', 'thumbnails/*'] } },
+      }),
+    );
+    handler.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'ScanResultDeleteVersions',
+        actions: ['s3:DeleteObjectVersion'],
+        resources: [bucket.arnForObjects('uploads/*'), bucket.arnForObjects('thumbnails/*')],
+      }),
+    );
+
+    const dlq = new sqs.Queue(this, 'ScanResultDlq', {
+      retentionPeriod: Duration.days(14),
+      encryption: sqs.QueueEncryption.SQS_MANAGED,
+      enforceSSL: true,
+    });
+    const results = new events.Rule(this, 'ScanResultRule', {
+      description: 'GuardDuty finished scanning an upload.',
+      eventPattern: {
+        source: ['aws.guardduty'],
+        detailType: ['GuardDuty Malware Protection Object Scan Result'],
+        detail: { s3ObjectDetails: { bucketName: [bucketName] } },
+      },
+    });
+    results.addTarget(new targets.LambdaFunction(handler, { deadLetterQueue: dlq, retryAttempts: 3, maxEventAge: Duration.hours(2) }));
+
+    const threats = new events.Rule(this, 'ThreatFoundRule', {
+      description: 'GuardDuty found malware in an upload.',
+      eventPattern: {
+        source: ['aws.guardduty'],
+        detailType: ['GuardDuty Malware Protection Object Scan Result'],
+        detail: { s3ObjectDetails: { bucketName: [bucketName] }, scanResultDetails: { scanResultStatus: ['THREATS_FOUND'] } },
+      },
+    });
+    threats.addTarget(
+      new targets.SnsTopic(alarmTopic, {
+        message: events.RuleTargetInput.fromText(
+          `Malware found in an upload: ${events.EventField.fromPath('$.detail.s3ObjectDetails.objectKey')}. The file is being quarantined and deleted.`,
+        ),
+      }),
+    );
+
+    new cloudwatch.Alarm(this, 'ScanResultDlqAlarm', {
+      alarmDescription: 'A malware scan result could not be handled. An infected file may still be in the bucket (the API will not serve it).',
+      metric: dlq.metricApproximateNumberOfMessagesVisible({ period: Duration.minutes(1), statistic: 'Maximum' }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(alarmAction);
+    new cloudwatch.Alarm(this, 'ScanResultErrorsAlarm', {
+      alarmDescription: 'The malware scan result handler is failing.',
+      metric: handler.metricErrors({ period: Duration.minutes(5) }),
+      threshold: 1,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(alarmAction);
+
+    new CfnOutput(this, 'ScanResultFunctionName', { value: handler.functionName });
   }
 }
 

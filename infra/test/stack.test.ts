@@ -475,6 +475,110 @@ describe('UploadPipelineStack', () => {
     });
   });
 
+  describe('malware scanning', () => {
+    const scanned = () => synth({ malwareScan: true, deployApi: true });
+    const policyStatements = (t: Template) =>
+      [...Object.values(t.findResources('AWS::IAM::Policy')), ...Object.values(t.findResources('AWS::IAM::ManagedPolicy'))].flatMap(
+        (p) => (p as { Properties: { PolicyDocument: { Statement: Array<Record<string, any>> } } }).Properties.PolicyDocument.Statement,
+      );
+
+    const BUCKET = { 'Fn::Join': ['', ['test-uploads-', { Ref: 'AWS::AccountId' }, '-', { Ref: 'AWS::Region' }]] };
+
+    it('is off by default: no scan plan, no rule, no handler', () => {
+      t.resourceCountIs('AWS::GuardDuty::MalwareProtectionPlan', 0);
+      t.resourceCountIs('AWS::Events::Rule', 0);
+      expect(JSON.stringify(apiEnvironment(synth({ deployApi: true })))).not.toContain('MALWARE_SCAN');
+    });
+
+    it('is not available in LocalStack', () => {
+      expect(() => synth({ local: true, malwareScan: true })).toThrow(/LocalStack/);
+    });
+
+    it('scans only what users upload, and tags each object with the verdict', () => {
+      scanned().hasResourceProperties('AWS::GuardDuty::MalwareProtectionPlan', {
+        ProtectedResource: { S3Bucket: { BucketName: BUCKET, ObjectPrefixes: ['uploads/'] } },
+        Actions: { Tagging: { Status: 'ENABLED' } },
+      });
+    });
+
+    it('lets GuardDuty, and only GuardDuty, assume a role limited to this bucket', () => {
+      const t = scanned();
+      const [role] = Object.values(t.findResources('AWS::IAM::Role')).filter((r) =>
+        JSON.stringify(r.Properties.AssumeRolePolicyDocument).includes('malware-protection-plan.guardduty.amazonaws.com'),
+      );
+      expect(role).toBeDefined();
+      const trust = role!.Properties.AssumeRolePolicyDocument.Statement as { Principal: { Service: string } }[];
+      expect(trust.map((s) => s.Principal.Service)).toEqual(['malware-protection-plan.guardduty.amazonaws.com']);
+
+      const granted = Object.values(t.findResources('AWS::IAM::Policy'))
+        .filter((p) => JSON.stringify(p.Properties.Roles).includes('ScanRole'))
+        .flatMap((p) => p.Properties.PolicyDocument.Statement as Array<Record<string, any>>);
+      expect(granted.length).toBeGreaterThan(0);
+      const actions = new Set(granted.flatMap((s) => [s.Action].flat() as string[]));
+      for (const a of ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObjectTagging', 's3:PutObjectVersionTagging', 's3:GetObjectTagging', 's3:GetObjectVersionTagging']) {
+        expect(actions).toContain(a);
+      }
+      // It scans and tags. It must not be able to write or delete the data itself.
+      for (const a of ['s3:DeleteObject', 's3:DeleteObjectVersion', 's3:GetBucketAcl']) expect(actions).not.toContain(a);
+    });
+
+    it('turns on S3 -> EventBridge delivery next to the queue notification, so GuardDuty can see uploads', () => {
+      scanned().hasResourceProperties('AWS::S3::Bucket', {
+        NotificationConfiguration: Match.objectLike({ EventBridgeConfiguration: { EventBridgeEnabled: true }, QueueConfigurations: Match.anyValue() }),
+      });
+    });
+
+    it('sends this bucket\'s scan results to a handler, with retries and a dead-letter queue that alarms', () => {
+      const t = scanned();
+      t.hasResourceProperties('AWS::Events::Rule', {
+        EventPattern: {
+          source: ['aws.guardduty'],
+          'detail-type': ['GuardDuty Malware Protection Object Scan Result'],
+          detail: { s3ObjectDetails: { bucketName: [BUCKET] } },
+        },
+        Targets: Match.arrayWith([
+          Match.objectLike({ DeadLetterConfig: Match.anyValue(), RetryPolicy: Match.objectLike({ MaximumRetryAttempts: Match.anyValue() }) }),
+        ]),
+      });
+      const alarms = Object.values(t.findResources('AWS::CloudWatch::Alarm')).map((a) => JSON.stringify(a.Properties));
+      expect(alarms.some((a) => a.includes('ScanResultDlq'))).toBe(true);
+      expect(alarms.some((a) => a.includes('ScanResultFn'))).toBe(true);
+    });
+
+    it('tells the alarm topic whenever malware is found', () => {
+      const t = scanned();
+      const rules = Object.values(t.findResources('AWS::Events::Rule')).map((r) => r.Properties);
+      const threat = rules.find((r) => JSON.stringify(r.EventPattern).includes('THREATS_FOUND'));
+      expect(threat).toBeDefined();
+      expect(JSON.stringify(threat!.Targets)).toContain('AlarmTopic');
+    });
+
+    it('gives the handler exactly what it needs: read and update the record, delete stored versions', () => {
+      const t = scanned();
+      t.hasResourceProperties('AWS::Lambda::Function', {
+        Environment: { Variables: Match.objectLike({ TABLE_NAME: Match.anyValue(), BUCKET_NAME: Match.anyValue() }) },
+        Timeout: 120,
+      });
+      const statements = policyStatements(t);
+      const handler = statements.filter((s) => String(s.Sid ?? '').startsWith('ScanResult'));
+      const bySid = (sid: string) => handler.find((s) => s.Sid === sid)!;
+      expect([bySid('ScanResultRecords').Action].flat().sort()).toEqual(['dynamodb:GetItem', 'dynamodb:UpdateItem']);
+      expect([bySid('ScanResultDeleteVersions').Action].flat().sort()).toEqual(['s3:DeleteObjectVersion']);
+      expect(JSON.stringify(bySid('ScanResultDeleteVersions').Resource)).toMatch(/uploads\/\*.*thumbnails\/\*|thumbnails\/\*.*uploads\/\*/);
+      expect([bySid('ScanResultListVersions').Action].flat()).toEqual(['s3:ListBucketVersions']);
+      expect(bySid('ScanResultListVersions').Condition).toEqual({ StringLike: { 's3:prefix': ['uploads/*', 'thumbnails/*'] } });
+    });
+
+    it('switches the API to scan-aware downloads and lets it read verdict tags on uploads only', () => {
+      const t = scanned();
+      expect(apiEnvironment(t).MALWARE_SCAN).toBe('true');
+      const read = policyStatements(t).find((s) => s.Sid === 'ReadScanVerdicts')!;
+      expect([read.Action].flat().sort()).toEqual(['s3:GetObjectTagging', 's3:GetObjectVersionTagging']);
+      expect(JSON.stringify(read.Resource)).toContain('uploads/*');
+      expect(JSON.stringify(read.Resource)).not.toContain('thumbnails');
+    });
+  });
+
   describe('API monitoring and scaling', () => {
     it('has no API alarms or scaling when the API is not deployed', () => {
       t.resourceCountIs('AWS::CloudWatch::Alarm', 3); // DLQ, backlog, worker errors
