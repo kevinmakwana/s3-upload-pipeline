@@ -11,16 +11,35 @@ on:
         required: true
         default: https://app.example.com
       jwt_issuer:
-        description: Token issuer (`iss`) the API accepts, for example https://your-tenant.auth0.com/
-        required: true
+        description: Token issuer (`iss`) the API accepts, for example https://your-tenant.auth0.com/. Leave empty with cognito.
+        required: false
       jwt_audience:
-        description: Audience (`aud`) the API requires in tokens
-        required: true
+        description: Audience (`aud`) the API requires in tokens. Leave empty with cognito.
+        required: false
       jwt_jwks_url:
-        description: HTTPS URL of the issuer's JSON Web Key Set
-        required: true
+        description: HTTPS URL of the issuer's JSON Web Key Set. Leave empty with cognito.
+        required: false
+      cognito:
+        description: Create a Cognito user pool and hosted login and use it instead of the jwt_* values
+        type: boolean
+        default: false
+      cognito_self_signup:
+        description: With cognito, let anyone create an account (otherwise you add users yourself)
+        type: boolean
+        default: false
+      deploy_web:
+        description: Host the web app on S3 and CloudFront (needs api_domain and certificate_arn)
+        type: boolean
+        default: false
+      api_domain:
+        description: Host name the API is served from, such as api.example.com (point a CNAME at the load balancer). Needed with deploy_web.
+        required: false
+      malware_scan:
+        description: Scan uploads with GuardDuty Malware Protection and quarantine infected files
+        type: boolean
+        default: false
       certificate_arn:
-        description: ACM certificate ARN for the API's HTTPS listener (recommended)
+        description: ACM certificate ARN for the API's HTTPS listener (required with deploy_web)
         required: false
       alarm_email:
         description: Email address to subscribe to the alarm topic
@@ -51,6 +70,9 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+      - name: Build the web app
+        if: ${{ inputs.deploy_web }}
+        run: npm run build -w @s3up/web
       - name: Deploy
         working-directory: infra
         env:
@@ -58,16 +80,31 @@ jobs:
           JWT_ISSUER: ${{ inputs.jwt_issuer }}
           JWT_AUDIENCE: ${{ inputs.jwt_audience }}
           JWT_JWKS_URL: ${{ inputs.jwt_jwks_url }}
+          COGNITO: ${{ inputs.cognito }}
+          COGNITO_SELF_SIGNUP: ${{ inputs.cognito_self_signup }}
+          DEPLOY_WEB: ${{ inputs.deploy_web }}
+          API_DOMAIN: ${{ inputs.api_domain }}
+          MALWARE_SCAN: ${{ inputs.malware_scan }}
           CERTIFICATE_ARN: ${{ inputs.certificate_arn }}
           ALARM_EMAIL: ${{ inputs.alarm_email }}
         run: |
           args=(
             -c deployApi=true
             -c "allowedOrigins=${ALLOWED_ORIGINS}"
-            -c "jwtIssuer=${JWT_ISSUER}"
-            -c "jwtAudience=${JWT_AUDIENCE}"
-            -c "jwtJwksUrl=${JWT_JWKS_URL}"
           )
+          # The API refuses to deploy without an auth choice: Cognito, or all three jwt values.
+          if [ "${COGNITO}" = "true" ]; then
+            args+=(-c cognito=true -c "cognitoSelfSignUp=${COGNITO_SELF_SIGNUP}")
+          else
+            args+=(
+              -c "jwtIssuer=${JWT_ISSUER}"
+              -c "jwtAudience=${JWT_AUDIENCE}"
+              -c "jwtJwksUrl=${JWT_JWKS_URL}"
+            )
+          fi
+          [ "${DEPLOY_WEB}" = "true" ] && args+=(-c deployWeb=true)
+          [ "${MALWARE_SCAN}" = "true" ] && args+=(-c malwareScan=true)
+          [ -n "${API_DOMAIN}" ] && args+=(-c "apiDomain=${API_DOMAIN}")
           [ -n "${CERTIFICATE_ARN}" ] && args+=(-c "certificateArn=${CERTIFICATE_ARN}")
           [ -n "${ALARM_EMAIL}" ] && args+=(-c "alarmEmail=${ALARM_EMAIL}")
           npx cdk deploy UploadPipeline --require-approval never "${args[@]}"

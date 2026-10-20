@@ -40,21 +40,40 @@ describe('repository consistency', () => {
     expect([...readme]).toEqual([...compose]);
   });
 
-  it('passes the JWT settings through the deploy workflow, since the API refuses to start without an auth choice', () => {
+  it('passes an auth choice through the deploy workflow (Cognito or the JWT settings), since the API refuses to start without one', () => {
     const deploy = read('.github/workflows/deploy.yml');
     for (const ctx of ['jwtIssuer', 'jwtAudience', 'jwtJwksUrl']) expect(deploy).toContain(`-c "${ctx}=`);
+    expect(deploy).toContain('-c cognito=true');
     expect(deploy).not.toContain('insecureDemoAuth');
     // CI synthesizes the API stack too, so its script must carry the same settings.
     const synthApi = JSON.parse(read('infra/package.json')).scripts['synth:api'] as string;
     for (const ctx of ['jwtIssuer', 'jwtAudience', 'jwtJwksUrl']) expect(synthApi).toContain(`-c ${ctx}=`);
   });
 
-  it('keeps the deploy workflow manual-only and gated behind an explicit repository variable', () => {
+  it.each(['deploy.yml', 'smoke.yml'])('keeps %s manual-only and gated behind an explicit repository variable', (file) => {
+    const workflow = read(`.github/workflows/${file}`);
+    expect(workflow).toMatch(/^on:\s*\n\s+workflow_dispatch:/m);
+    expect(workflow).not.toMatch(/^\s+(push|pull_request|schedule):/m);
+    expect(workflow).toContain("vars.ENABLE_AWS_DEPLOY == 'true'");
+    expect(workflow).toMatch(/id-token:\s*write/);
+    expect(workflow).not.toMatch(/AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)/);
+  });
+
+  it('builds the web app in the deploy workflow when it hosts it, since the stack publishes apps/web/dist', () => {
     const deploy = read('.github/workflows/deploy.yml');
-    expect(deploy).toMatch(/^on:\s*\n\s+workflow_dispatch:/m);
-    expect(deploy).not.toMatch(/^\s+(push|pull_request|schedule):/m);
-    expect(deploy).toContain("vars.ENABLE_AWS_DEPLOY == 'true'");
-    expect(deploy).toMatch(/id-token:\s*write/);
-    expect(deploy).not.toMatch(/AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY)/);
+    expect(deploy).toMatch(/if: \$\{\{ inputs\.deploy_web \}\}\s*\n\s+run: npm run build -w @s3up\/web/);
+  });
+
+  it('synthesizes every optional feature together in CI, so a broken combination cannot merge', () => {
+    const full = JSON.parse(read('infra/package.json')).scripts['synth:full'] as string;
+    for (const ctx of ['deployApi=true', 'cognito=true', 'deployWeb=true', 'malwareScan=true', 'apiDomain=', 'certificateArn=']) expect(full).toContain(`-c ${ctx}`);
+    expect(read('.github/workflows/ci.yml')).toContain('npm run synth:full');
+  });
+
+  it('keeps the real-AWS smoke test out of the unit run and the unit run free of AWS', () => {
+    const config = read('jest.config.js');
+    expect(config).toMatch(/displayName: 'smoke'/);
+    expect(JSON.parse(read('package.json')).scripts.test).toContain('--selectProjects unit');
+    expect(read('.github/workflows/ci.yml')).not.toContain('smoke:aws');
   });
 });

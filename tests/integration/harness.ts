@@ -13,9 +13,9 @@ export interface RunningApi {
   close(): Promise<void>;
 }
 
-/** Boots the real Nest app in-process, wired to LocalStack through the environment. */
-export async function startApi(): Promise<RunningApi> {
-  const config = loadConfig({ ...process.env, PORT: '0', PART_SIZE_BYTES: String(16 * 1024 * 1024), SSE_POLL_MS: '250' });
+/** Boots the real Nest app in-process, wired to LocalStack (or AWS) through the environment. */
+export async function startApi(overrides: NodeJS.ProcessEnv = {}): Promise<RunningApi> {
+  const config = loadConfig({ ...process.env, PORT: '0', PART_SIZE_BYTES: String(16 * 1024 * 1024), SSE_POLL_MS: '250', ...overrides });
   const app = await NestFactory.create(AppModule.register(config), { logger: ['error'] });
   await app.listen(0, '127.0.0.1');
   const url = `http://127.0.0.1:${(app.getHttpServer().address() as AddressInfo).port}`;

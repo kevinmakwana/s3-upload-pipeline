@@ -27,5 +27,15 @@ module.exports = {
       testMatch: ['<rootDir>/tests/integration/**/*.int.test.ts'],
       setupFilesAfterEnv: ['<rootDir>/tests/integration/timeout.ts'],
     },
+    {
+      // Real AWS: only run on purpose (npm run smoke:aws), never as part of `npm test`.
+      displayName: 'smoke',
+      testEnvironment: 'node',
+      transform: tsJest,
+      modulePathIgnorePatterns: ['<rootDir>/infra/cdk.out'],
+      setupFiles: ['<rootDir>/tests/smoke/setup.ts'],
+      testMatch: ['<rootDir>/tests/smoke/**/*.smoke.test.ts'],
+      setupFilesAfterEnv: ['<rootDir>/tests/integration/timeout.ts'],
+    },
   ],
 };

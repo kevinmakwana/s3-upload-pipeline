@@ -1,0 +1,60 @@
+name: Smoke test on AWS (manual)
+
+# Runs the end-to-end checks against a stack that is already deployed to real AWS: multipart upload,
+# the worker, thumbnails, download and delete, with the API limited to the stack's ApiPolicy. Disabled
+# by default, like the deploy workflow: it runs only when started by hand AND the repository variable
+# ENABLE_AWS_DEPLOY is "true". It needs the same OIDC role, plus the IAM rights listed in the README.
+on:
+  workflow_dispatch:
+    inputs:
+      stack_name:
+        description: Name of the deployed stack
+        required: true
+        default: UploadPipeline
+      malware_scan:
+        description: The stack was deployed with malware scanning, so also check that EICAR is quarantined
+        type: boolean
+        default: false
+
+permissions:
+  id-token: write # request the OIDC token
+  contents: read
+
+concurrency:
+  group: smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    if: ${{ vars.ENABLE_AWS_DEPLOY == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: aws
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Read the stack outputs
+        env:
+          STACK_NAME: ${{ inputs.stack_name }}
+        run: |
+          aws cloudformation describe-stacks --stack-name "${STACK_NAME}" --output json \
+            | node -e '
+              const { Stacks } = JSON.parse(require("fs").readFileSync(0, "utf8"));
+              const outputs = Stacks?.[0]?.Outputs ?? [];
+              if (outputs.length === 0) throw new Error("Stack " + process.env.STACK_NAME + " has no outputs");
+              const flat = Object.fromEntries(outputs.map((o) => [o.OutputKey, o.OutputValue]));
+              require("fs").writeFileSync("cdk-outputs.aws.json", JSON.stringify({ [process.env.STACK_NAME]: flat }));
+            '
+      - name: Smoke test
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          SMOKE_MALWARE: ${{ inputs.malware_scan }}
+        run: npm run smoke:aws
