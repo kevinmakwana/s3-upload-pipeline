@@ -15,7 +15,7 @@
     "infra"
   ],
   "scripts": {
-    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tsconfig.json",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p tsconfig.json && tsc -p e2e/tsconfig.json",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects unit",
     "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects integration --runInBand",
     "smoke:aws": "node --experimental-vm-modules node_modules/jest/bin/jest.js --selectProjects smoke --runInBand",
@@ -33,13 +33,15 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,css}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,css}\"",
-    "prepare": "husky || true"
+    "prepare": "husky || true",
+    "test:e2e": "playwright test -c e2e/playwright.config.ts"
   },
   "devDependencies": {
     "@aws-sdk/client-iam": "^3.1153.0",
     "@aws-sdk/client-sqs": "^3.1149.0",
     "@aws-sdk/client-sts": "^3.1153.0",
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.20.5",
     "concurrently": "^10.0.6",

@@ -191,13 +191,17 @@ All routes except `/health` require authentication: a bearer token in `jwt` mode
 ```bash
 npm test                  # unit tests
 npm run typecheck
+npm run lint              # ESLint; `npm run format:check` checks Prettier
 npm run test:integration  # needs LocalStack up and deployed (see quick start)
+npm run test:e2e          # Chromium against the dev servers and LocalStack (same prerequisites)
 npm run smoke:aws         # real AWS only, on purpose (see Smoke test on AWS)
 ```
 
 - **Unit** covers part and part-count planning at the S3 limits, key and prefix scoping, presign scoping (the signed URL's path, upload id, part number, expiry and signed headers), resume reconciliation, the upload engine (concurrency, backoff, pause, resume, restart when the upload expired), the worker's idempotency and failure handling, IAM least privilege on the synthesized template, IndexedDB persistence, and the HTTP API including cross-user isolation.
 - **Integration** boots the real API against the deployed stack in LocalStack and uploads a generated ~200 MB file, interrupts it, resumes it from a fresh session, then waits for the Lambda to mark it `ready` and checks the checksum. It also covers thumbnails, content-type rejection, S3 refusing mismatched checksums, abort, and redelivery of the same S3 event. The DynamoDB store runs the same contract suite as its in-memory twin.
-- **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs typecheck, unit tests, builds and `cdk synth` on Ubuntu 24.04, and runs the integration suite with LocalStack as a service container. LocalStack does not enforce presigned-URL signatures, so signature scoping is verified on the generated URLs rather than by S3 refusing them.
+- **End-to-end** ([`e2e/`](e2e)) drives the real page in Chromium with Playwright. It starts the API and the Vite dev server itself (or reuses ones already running) and talks to the deployed stack in LocalStack. It uploads a three-part file and checks the worker's SHA-256, the downloaded bytes and the delete; uploads an image and checks its dimensions and thumbnail; interrupts a five-part upload with a reload and resumes it; and walks through the sign-in redirect with PKCE (against a stand-in login page), checking the ID token reaches the API and that signing out clears it. Run `npx playwright install chromium` once first.
+- **Lint and format.** ESLint 10 (typescript-eslint, with the type-aware promise rules, and the React hooks rules for the web app) and Prettier. A pre-commit hook (husky and lint-staged) fixes staged files; CI fails on any lint error or unformatted file. `.git-blame-ignore-revs` lists the one-time reformat commit (`git config blame.ignoreRevsFile .git-blame-ignore-revs`).
+- **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs lint, formatting, typecheck, unit tests, builds and `cdk synth` on Ubuntu 24.04, and runs the integration and browser suites with LocalStack as a service container. LocalStack does not enforce presigned-URL signatures, so signature scoping is verified on the generated URLs rather than by S3 refusing them.
 
 ## Deploy to real AWS (optional)
 
@@ -338,6 +342,7 @@ packages/core    Part planning, validation, reconciliation, the upload engine
 packages/data    DynamoDB file store and idempotency ledger (+ in-memory twin)
 scripts/         File generator, soak test, env writer
 tests/           LocalStack integration suite, real-AWS smoke test, repository checks
+e2e/             Playwright browser tests
 ```
 
 ## License
