@@ -17,4 +17,9 @@ generateFile(path, size, (w) => {
     lastPct = pct;
     process.stdout.write(`\r${pct}%`);
   }
-}).then((f) => console.log(`\nwrote ${f.path} (${f.size} bytes)\nsha256 ${f.sha256}`));
+})
+  .then((f) => console.log(`\nwrote ${f.path} (${f.size} bytes)\nsha256 ${f.sha256}`))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });

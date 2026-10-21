@@ -6,6 +6,10 @@ import { contentSecurityPolicy, webRuntimeConfig } from '../lib/web-hosting';
 
 const JWT_AUTH = { mode: 'jwt', issuer: 'https://idp.example.com/', audience: 'upload-api', jwksUrl: 'https://idp.example.com/.well-known/jwks.json' } as const;
 
+/** An IAM policy statement as it appears in a synthesized template (the shape varies, so it is read loosely). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Statement = Record<string, any>;
+
 function synth(props: Partial<ConstructorParameters<typeof UploadPipelineStack>[2]> = {}) {
   // Skip esbuild bundling: these tests assert on the template, not the asset.
   const app = new App({ context: { 'aws:cdk:bundling-stacks': [] } });
@@ -98,7 +102,12 @@ describe('UploadPipelineStack', () => {
   it('derives the bucket name from the stack id so copies do not collide, and rejects ids that cannot be bucket names', () => {
     const name = (id: string) => {
       const app = new App({ context: { 'aws:cdk:bundling-stacks': [] } });
-      const stack = new UploadPipelineStack(app, id, { local: false, deployApi: false, allowedOrigins: ['https://a.example'], env: { account: '123456789012', region: 'us-east-1' } });
+      const stack = new UploadPipelineStack(app, id, {
+        local: false,
+        deployApi: false,
+        allowedOrigins: ['https://a.example'],
+        env: { account: '123456789012', region: 'us-east-1' },
+      });
       return JSON.stringify(Template.fromStack(stack).findResources('AWS::S3::Bucket'));
     };
     expect(name('Staging')).toContain('staging-uploads-');
@@ -188,9 +197,7 @@ describe('UploadPipelineStack', () => {
   it('sends uploads/ ObjectCreated events to the queue, and only S3 from this bucket may enqueue', () => {
     t.hasResourceProperties('AWS::S3::Bucket', {
       NotificationConfiguration: {
-        QueueConfigurations: [
-          Match.objectLike({ Event: 's3:ObjectCreated:*', Filter: { S3Key: { Rules: [{ Name: 'prefix', Value: 'uploads/' }] } } }),
-        ],
+        QueueConfigurations: [Match.objectLike({ Event: 's3:ObjectCreated:*', Filter: { S3Key: { Rules: [{ Name: 'prefix', Value: 'uploads/' }] } } })],
       },
     });
     t.hasResourceProperties('AWS::SQS::QueuePolicy', {
@@ -289,7 +296,13 @@ describe('UploadPipelineStack', () => {
       expect(list.Condition).toEqual({ StringLike: { 's3:prefix': ['uploads/*', 'thumbnails/*'] } });
       expect(JSON.stringify(list.Resource)).not.toContain('/*');
 
-      expect(actionsOf(sid('FileRecords')).sort()).toEqual(['dynamodb:DeleteItem', 'dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:Query', 'dynamodb:UpdateItem']);
+      expect(actionsOf(sid('FileRecords')).sort()).toEqual([
+        'dynamodb:DeleteItem',
+        'dynamodb:GetItem',
+        'dynamodb:PutItem',
+        'dynamodb:Query',
+        'dynamodb:UpdateItem',
+      ]);
     });
 
     it('limits the worker to reading uploads, writing thumbnails and two DynamoDB actions', () => {
@@ -410,7 +423,7 @@ describe('UploadPipelineStack', () => {
       const policy = contentSecurityPolicy('api.example.com');
       expect(policy).toContain("default-src 'none'");
       expect(policy).toContain("script-src 'self'");
-      expect(policy).toContain('connect-src \'self\' https://api.example.com https://*.amazonaws.com https://*.amazoncognito.com');
+      expect(policy).toContain("connect-src 'self' https://api.example.com https://*.amazonaws.com https://*.amazoncognito.com");
       expect(policy).toContain("frame-ancestors 'none'");
       expect(policy).not.toContain('unsafe-eval');
       expect(policy).not.toMatch(/script-src[^;]*unsafe-inline/);
@@ -418,7 +431,10 @@ describe('UploadPipelineStack', () => {
 
     it('lets the hosted page call the API and put parts to S3 (CORS), without listing it by hand', () => {
       const t = synth({ ...web, deployApi: true, certificateArn: 'arn:aws:acm:us-east-1:123456789012:certificate/abc' });
-      const origins = (t.findResources('AWS::S3::Bucket') as Record<string, { Properties: { CorsConfiguration?: { CorsRules: { AllowedOrigins: unknown[] }[] } } }>);
+      const origins = t.findResources('AWS::S3::Bucket') as Record<
+        string,
+        { Properties: { CorsConfiguration?: { CorsRules: { AllowedOrigins: unknown[] }[] } } }
+      >;
       const upload = Object.values(origins).find((b) => b.Properties.CorsConfiguration)!;
       const allowed = JSON.stringify(upload.Properties.CorsConfiguration!.CorsRules[0]!.AllowedOrigins);
       expect(allowed).toContain('https://app.example.com');
@@ -479,7 +495,7 @@ describe('UploadPipelineStack', () => {
     const scanned = () => synth({ malwareScan: true, deployApi: true });
     const policyStatements = (t: Template) =>
       [...Object.values(t.findResources('AWS::IAM::Policy')), ...Object.values(t.findResources('AWS::IAM::ManagedPolicy'))].flatMap(
-        (p) => (p as { Properties: { PolicyDocument: { Statement: Array<Record<string, any>> } } }).Properties.PolicyDocument.Statement,
+        (p) => (p as { Properties: { PolicyDocument: { Statement: Statement[] } } }).Properties.PolicyDocument.Statement,
       );
 
     const BUCKET = { 'Fn::Join': ['', ['test-uploads-', { Ref: 'AWS::AccountId' }, '-', { Ref: 'AWS::Region' }]] };
@@ -512,10 +528,17 @@ describe('UploadPipelineStack', () => {
 
       const granted = Object.values(t.findResources('AWS::IAM::Policy'))
         .filter((p) => JSON.stringify(p.Properties.Roles).includes('ScanRole'))
-        .flatMap((p) => p.Properties.PolicyDocument.Statement as Array<Record<string, any>>);
+        .flatMap((p) => p.Properties.PolicyDocument.Statement as Statement[]);
       expect(granted.length).toBeGreaterThan(0);
       const actions = new Set(granted.flatMap((s) => [s.Action].flat() as string[]));
-      for (const a of ['s3:GetObject', 's3:GetObjectVersion', 's3:PutObjectTagging', 's3:PutObjectVersionTagging', 's3:GetObjectTagging', 's3:GetObjectVersionTagging']) {
+      for (const a of [
+        's3:GetObject',
+        's3:GetObjectVersion',
+        's3:PutObjectTagging',
+        's3:PutObjectVersionTagging',
+        's3:GetObjectTagging',
+        's3:GetObjectVersionTagging',
+      ]) {
         expect(actions).toContain(a);
       }
       // It scans and tags. It must not be able to write or delete the data itself.
@@ -528,7 +551,7 @@ describe('UploadPipelineStack', () => {
       });
     });
 
-    it('sends this bucket\'s scan results to a handler, with retries and a dead-letter queue that alarms', () => {
+    it("sends this bucket's scan results to a handler, with retries and a dead-letter queue that alarms", () => {
       const t = scanned();
       t.hasResourceProperties('AWS::Events::Rule', {
         EventPattern: {
@@ -589,7 +612,14 @@ describe('UploadPipelineStack', () => {
       const withApi = synth({ deployApi: true });
       const alarms = Object.values(withApi.findResources('AWS::CloudWatch::Alarm')).map((a) => a.Properties);
       const byMetric = (name: string) => alarms.filter((a) => a.MetricName === name || JSON.stringify(a.Metrics ?? '').includes(name));
-      for (const metric of ['HTTPCode_Target_5XX_Count', 'HTTPCode_ELB_5XX_Count', 'UnHealthyHostCount', 'TargetResponseTime', 'CPUUtilization', 'MemoryUtilization']) {
+      for (const metric of [
+        'HTTPCode_Target_5XX_Count',
+        'HTTPCode_ELB_5XX_Count',
+        'UnHealthyHostCount',
+        'TargetResponseTime',
+        'CPUUtilization',
+        'MemoryUtilization',
+      ]) {
         expect({ metric, alarms: byMetric(metric).length }).toEqual({ metric, alarms: 1 });
       }
       withApi.resourceCountIs('AWS::CloudWatch::Alarm', 3 + 6);

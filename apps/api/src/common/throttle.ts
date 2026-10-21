@@ -9,7 +9,7 @@ const first = (v: unknown): string | undefined => (Array.isArray(v) ? v[0] : (v 
  * from using up another's budget; the per-address limit alongside catches floods of bogus
  * credentials. The throttler hashes this into its storage key, so tokens are not kept around.
  */
-export function callerKey(req: Record<string, any>): string {
+export function callerKey(req: { headers?: Record<string, unknown>; ip?: string }): string {
   const credential = first(req.headers?.authorization) ?? first(req.headers?.['x-user-id']);
   return credential ? `credential:${credential}` : `ip:${req.ip}`;
 }

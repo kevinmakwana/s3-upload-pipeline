@@ -28,20 +28,43 @@
     "gen:file": "tsx scripts/gen-file.ts",
     "soak": "tsx scripts/soak.ts",
     "synth:api": "npm run synth:api -w infra",
-    "synth:full": "npm run synth:full -w infra"
+    "synth:full": "npm run synth:full -w infra",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,css}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,css}\"",
+    "prepare": "husky || true"
   },
   "devDependencies": {
     "@aws-sdk/client-iam": "^3.1153.0",
     "@aws-sdk/client-sqs": "^3.1149.0",
     "@aws-sdk/client-sts": "^3.1153.0",
+    "@eslint/js": "^10.0.1",
     "@types/jest": "^30.0.0",
     "@types/node": "^22.20.5",
     "concurrently": "^10.0.6",
     "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "husky": "^9.1.7",
     "jest": "^30.5.2",
     "jimp": "^1.6.1",
+    "lint-staged": "^17.6.0",
+    "prettier": "^3.9.10",
     "ts-jest": "^29.4.14",
     "tsx": "^4.23.15",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.72.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,js,mjs}": [
+      "eslint --fix --max-warnings=0",
+      "prettier --write"
+    ],
+    "*.{json,css}": [
+      "prettier --write"
+    ]
   }
 }
