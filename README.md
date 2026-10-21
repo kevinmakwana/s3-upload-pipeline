@@ -265,7 +265,12 @@ GuardDuty needs the bucket to send events to EventBridge; the stack enables that
 
 ### Deploying from GitHub Actions with OIDC
 
-[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) is manual and **disabled by default**. It authenticates with GitHub's OIDC provider, so no AWS keys are stored in the repository. To enable it:
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) is manual and **disabled by default**. It authenticates with GitHub's OIDC provider, so no AWS keys are stored in the repository. It works in two steps so nothing ships unseen:
+
+1. **Plan.** The workflow synthesizes the stack once and runs `cdk diff` against what is deployed. The diff is in the run's summary page, and the synthesized plan is kept as an artifact.
+2. **Deploy.** This job waits for a reviewer to approve the `aws-deploy` environment, then deploys *that same plan*, not a fresh synthesis, so what was reviewed is what ships. There is no blanket `--require-approval never`: changes that widen IAM permissions or network access make the deploy refuse to run unless you ticked **approve_security_changes** when starting it. A first deploy always counts, because it creates the roles. Tick **plan_only** to stop after the diff.
+
+To enable it:
 
 1. In IAM, add the OIDC identity provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`).
 2. Create a role that trusts it. Use the `sub` claim your repository actually emits ([how to check](https://github.com/aws-actions/configure-aws-credentials#quick-start-oidc-recommended)), for example:
@@ -277,14 +282,17 @@ GuardDuty needs the bucket to send events to EventBridge; the stack enables that
      "Condition": {
        "StringEquals": {
          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-         "token.actions.githubusercontent.com:sub": "repo:kevinmakwana/s3-upload-pipeline:environment:aws"
+         "token.actions.githubusercontent.com:sub": [
+           "repo:kevinmakwana/s3-upload-pipeline:environment:aws",
+           "repo:kevinmakwana/s3-upload-pipeline:environment:aws-deploy"
+         ]
        }
      }
    }
    ```
 3. Give the role permission to assume the CDK bootstrap roles (`sts:AssumeRole` on `arn:aws:iam::<ACCOUNT_ID>:role/cdk-*`), which keeps its own permissions tiny.
-4. In the repository settings, create an environment named `aws`, then set the variables `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION` and `ENABLE_AWS_DEPLOY=true`.
-5. Run **Deploy to AWS (manual)** from the Actions tab and fill in the allowed origins and either the JWT issuer, audience and JWKS URL or the `cognito` option. The other options above are checkboxes there too; with `deploy_web` the workflow builds the web app first.
+4. In the repository settings, create two environments: `aws` (for the plan; no approval needed) and `aws-deploy` with **required reviewers** (that approval is the gate). Then set the variables `AWS_DEPLOY_ROLE_ARN`, `AWS_REGION` and `ENABLE_AWS_DEPLOY=true`.
+5. Run **Deploy to AWS (manual)** from the Actions tab and fill in the allowed origins and either the JWT issuer, audience and JWKS URL or the `cognito` option. The other options above are checkboxes there too; with `deploy_web` the workflow builds the web app first. A good first run is with **plan_only** ticked: read the diff, then run again with **approve_security_changes** if it widens permissions.
 
 ### Smoke test on AWS
 
