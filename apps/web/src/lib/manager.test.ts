@@ -13,13 +13,34 @@ class Backend implements UploadApi, PartTransport {
   puts: number[] = [];
   failPart?: number;
   file(): FileDto {
-    return { id: 'f1', fileName: 'big.bin', contentType: 'application/octet-stream', size: SIZE, status: this.status, partSize: 5 * MiB, partCount: 3, createdAt: 't', updatedAt: 't' };
+    return {
+      id: 'f1',
+      fileName: 'big.bin',
+      contentType: 'application/octet-stream',
+      size: SIZE,
+      status: this.status,
+      partSize: 5 * MiB,
+      partCount: 3,
+      createdAt: 't',
+      updatedAt: 't',
+    };
   }
-  async init() { return this.file(); }
-  async listParts() { return { file: this.file(), parts: [...this.parts.values()] }; }
-  async presignPart(_id: string, n: number, sha: string) { return { url: `https://s3/${n}`, method: 'PUT' as const, headers: { sha }, expiresAt: '' }; }
-  async complete() { this.status = 'uploaded'; return this.file(); }
-  async abort() { /* noop */ }
+  async init() {
+    return this.file();
+  }
+  async listParts() {
+    return { file: this.file(), parts: [...this.parts.values()] };
+  }
+  async presignPart(_id: string, n: number, sha: string) {
+    return { url: `https://s3/${n}`, method: 'PUT' as const, headers: { sha }, expiresAt: '' };
+  }
+  async complete() {
+    this.status = 'uploaded';
+    return this.file();
+  }
+  async abort() {
+    /* noop */
+  }
   async put(req: PutRequest) {
     const n = Number(new URL(req.url).pathname.slice(1));
     this.puts.push(n);
@@ -38,8 +59,13 @@ async function until(cond: () => boolean) {
 /** One worker by default: part order is then deterministic, so "parts 1-2 landed, part 3 failed" holds. */
 function makeManager(backend: Backend, dbName: string, storage?: Pick<Storage, 'getItem' | 'setItem'>, concurrency = 1) {
   return new UploadManager({
-    api: backend, transport: backend, store: new IndexedDbResumeStore(dbName), makeSource: (f) => new BrowserFileSource(f),
-    uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency, storage,
+    api: backend,
+    transport: backend,
+    store: new IndexedDbResumeStore(dbName),
+    makeSource: (f) => new BrowserFileSource(f),
+    uploadOptions: { maxRetries: 0, sleep: async () => undefined },
+    concurrency,
+    storage,
   });
 }
 
@@ -90,7 +116,14 @@ describe('UploadManager', () => {
     store.putHandle = async (id, h) => void handles.set(id, h);
     store.getHandle = async (id) => handles.get(id);
     const make = () =>
-      new UploadManager({ api: backend, transport: backend, store, makeSource: (f) => new BrowserFileSource(f), uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency: 1 });
+      new UploadManager({
+        api: backend,
+        transport: backend,
+        store,
+        makeSource: (f) => new BrowserFileSource(f),
+        uploadOptions: { maxRetries: 0, sleep: async () => undefined },
+        concurrency: 1,
+      });
 
     const first = make();
     await first.add(bigFile(), handle);
@@ -155,8 +188,16 @@ describe('UploadManager', () => {
 
 describe('UploadManager file list paging', () => {
   const dto = (n: number, extra: Partial<FileDto> = {}): FileDto => ({
-    id: `f${n}`, fileName: `f${n}.bin`, contentType: 'application/octet-stream', size: 1, status: 'ready', partSize: 5 * MiB, partCount: 1,
-    createdAt: `2026-01-01T00:00:0${n}.000Z`, updatedAt: `2026-01-01T00:00:0${n}.000Z`, ...extra,
+    id: `f${n}`,
+    fileName: `f${n}.bin`,
+    contentType: 'application/octet-stream',
+    size: 1,
+    status: 'ready',
+    partSize: 5 * MiB,
+    partCount: 1,
+    createdAt: `2026-01-01T00:00:0${n}.000Z`,
+    updatedAt: `2026-01-01T00:00:0${n}.000Z`,
+    ...extra,
   });
   const ids = (m: UploadManager) => m.getSnapshot().files.map((f) => f.id);
 
@@ -265,8 +306,15 @@ describe('UploadManager file list paging', () => {
 
 describe('UploadManager file actions', () => {
   const dto = (n: number): FileDto => ({
-    id: `f${n}`, fileName: `f${n}.bin`, contentType: 'application/octet-stream', size: 1, status: 'ready', partSize: 5 * MiB, partCount: 1,
-    createdAt: `2026-01-01T00:00:0${n}.000Z`, updatedAt: `2026-01-01T00:00:0${n}.000Z`,
+    id: `f${n}`,
+    fileName: `f${n}.bin`,
+    contentType: 'application/octet-stream',
+    size: 1,
+    status: 'ready',
+    partSize: 5 * MiB,
+    partCount: 1,
+    createdAt: `2026-01-01T00:00:0${n}.000Z`,
+    updatedAt: `2026-01-01T00:00:0${n}.000Z`,
   });
   const ids = (m: UploadManager) => m.getSnapshot().files.map((f) => f.id);
 
@@ -278,8 +326,13 @@ describe('UploadManager file actions', () => {
       deleteFile: jest.fn(overrides.deleteFile ?? (async () => undefined)),
     });
     const manager = new UploadManager({
-      api: backend, transport: backend, store: new IndexedDbResumeStore(`actions-${Math.random()}`), makeSource: (f) => new BrowserFileSource(f),
-      uploadOptions: { maxRetries: 0, sleep: async () => undefined }, concurrency: 1, startDownload: (url) => started.push(url),
+      api: backend,
+      transport: backend,
+      store: new IndexedDbResumeStore(`actions-${Math.random()}`),
+      makeSource: (f) => new BrowserFileSource(f),
+      uploadOptions: { maxRetries: 0, sleep: async () => undefined },
+      concurrency: 1,
+      startDownload: (url) => started.push(url),
     });
     return { manager, backend, started };
   }
@@ -332,7 +385,11 @@ describe('UploadManager file actions', () => {
   });
 
   it('keeps the file and shows the reason when deleting fails', async () => {
-    const { manager } = setup({ deleteFile: async () => { throw new HttpError('File changed while it was being deleted; try again', 409); } });
+    const { manager } = setup({
+      deleteFile: async () => {
+        throw new HttpError('File changed while it was being deleted; try again', 409);
+      },
+    });
     await manager.refreshFiles();
     await manager.deleteFile('f2');
     expect(ids(manager)).toEqual(['f3', 'f2', 'f1']);
@@ -351,7 +408,11 @@ describe('UploadManager file actions', () => {
   });
 
   it('lets the user dismiss an error', async () => {
-    const { manager } = setup({ getDownloadUrl: async () => { throw new HttpError('nope', 409); } });
+    const { manager } = setup({
+      getDownloadUrl: async () => {
+        throw new HttpError('nope', 409);
+      },
+    });
     await manager.downloadFile('f1');
     manager.dismissFileError('f1');
     expect(manager.getSnapshot().fileActions).toEqual({});

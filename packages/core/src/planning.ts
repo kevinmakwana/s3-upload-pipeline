@@ -57,10 +57,7 @@ export function planParts(fileSize: number, options: PlanOptions = {}): PartPlan
   const partSize = Math.max(roundUpToMiB(preferred), roundUpToMiB(minPartSize), sizeForMaxParts);
 
   if (partSize > maxPartSize) {
-    throw new PlanError(
-      'TOO_LARGE',
-      `File of ${fileSize} bytes needs ${partSize}-byte parts, above the ${maxPartSize}-byte limit`,
-    );
+    throw new PlanError('TOO_LARGE', `File of ${fileSize} bytes needs ${partSize}-byte parts, above the ${maxPartSize}-byte limit`);
   }
 
   return { fileSize, partSize, partCount: Math.ceil(fileSize / partSize) };

@@ -17,9 +17,12 @@ describe('HTTP API', () => {
     files = new MemoryFileStore();
     s3 = new FakeS3();
     const moduleRef = await Test.createTestingModule({ imports: [AppModule.register(testConfig)] })
-      .overrideProvider(FILES).useValue(files)
-      .overrideProvider(S3).useValue(s3)
-      .overrideProvider(S3_PRESIGNER).useValue(offlinePresigner())
+      .overrideProvider(FILES)
+      .useValue(files)
+      .overrideProvider(S3)
+      .useValue(s3)
+      .overrideProvider(S3_PRESIGNER)
+      .useValue(offlinePresigner())
       .compile();
     app = moduleRef.createNestApplication();
     await app.init();
@@ -46,9 +49,17 @@ describe('HTTP API', () => {
     const id = init.body.file.id as string;
     expect(init.body.file).toMatchObject({ status: 'uploading', partCount: 3 });
 
-    const presign = await http.post(`/uploads/${id}/parts/1/presign`).set('x-user-id', 'alice').send({ sha256: Buffer.alloc(32, 9).toString('base64') }).expect(200);
+    const presign = await http
+      .post(`/uploads/${id}/parts/1/presign`)
+      .set('x-user-id', 'alice')
+      .send({ sha256: Buffer.alloc(32, 9).toString('base64') })
+      .expect(200);
     expect(presign.body.url).toContain('partNumber=1');
-    await http.post(`/uploads/${id}/parts/9/presign`).set('x-user-id', 'alice').send({ sha256: Buffer.alloc(32, 9).toString('base64') }).expect(400);
+    await http
+      .post(`/uploads/${id}/parts/9/presign`)
+      .set('x-user-id', 'alice')
+      .send({ sha256: Buffer.alloc(32, 9).toString('base64') })
+      .expect(400);
     await http.post(`/uploads/${id}/parts/x/presign`).set('x-user-id', 'alice').send({ sha256: 'x' }).expect(400);
 
     await http.get(`/uploads/${id}/parts`).set('x-user-id', 'mallory').expect(404);
@@ -72,8 +83,18 @@ describe('HTTP API', () => {
       for (let n = 1; n <= count; n++) {
         const id = `file-${userId}-${String(n).padStart(3, '0')}`;
         const record: FileRecord = {
-          id, userId, fileName: `f${n}.bin`, contentType: 'application/octet-stream', size: 10, status: aborted.includes(n) ? 'aborted' : 'uploading',
-          partSize: 5 * MiB, partCount: 1, s3Key: `uploads/${userId}/${id}/f${n}.bin`, s3UploadId: 'u', createdAt: stamp(n), updatedAt: stamp(n),
+          id,
+          userId,
+          fileName: `f${n}.bin`,
+          contentType: 'application/octet-stream',
+          size: 10,
+          status: aborted.includes(n) ? 'aborted' : 'uploading',
+          partSize: 5 * MiB,
+          partCount: 1,
+          s3Key: `uploads/${userId}/${id}/f${n}.bin`,
+          s3UploadId: 'u',
+          createdAt: stamp(n),
+          updatedAt: stamp(n),
         };
         await files.create(record);
         if (!aborted.includes(n)) ids.push(id);
@@ -119,7 +140,7 @@ describe('HTTP API', () => {
       },
     );
 
-    it('keeps users apart: a cursor from one user cannot read another user\'s files', async () => {
+    it("keeps users apart: a cursor from one user cannot read another user's files", async () => {
       await seed('alice', 4);
       const bob = await seed('bob', 2);
       const { nextCursor } = (await get('?limit=1')).body;
@@ -162,15 +183,29 @@ describe('HTTP API', () => {
     async function finished(status: FileRecord['status'] = 'ready', userId = 'alice') {
       const id = `file-${Math.random().toString(36).slice(2, 10)}`;
       const record: FileRecord = {
-        id, userId, fileName: 'Quarterly "report".pdf', contentType: 'application/pdf', size: 10, status, partSize: 5 * MiB, partCount: 1,
-        s3Key: KEY(id), s3UploadId: 'u', createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z', versionId: 'v-main',
+        id,
+        userId,
+        fileName: 'Quarterly "report".pdf',
+        contentType: 'application/pdf',
+        size: 10,
+        status,
+        partSize: 5 * MiB,
+        partCount: 1,
+        s3Key: KEY(id),
+        s3UploadId: 'u',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        versionId: 'v-main',
         ...(status === 'ready' ? { result: { sha256: 'ab', size: 10, thumbnailKey: THUMB(id) } } : {}),
       };
       await files.create(record);
       s3.addVersion(KEY(id), 'v-main');
       return record;
     }
-    const as = (user: string) => ({ get: (p: string) => request(app.getHttpServer()).get(p).set('x-user-id', user), del: (p: string) => request(app.getHttpServer()).delete(p).set('x-user-id', user) });
+    const as = (user: string) => ({
+      get: (p: string) => request(app.getHttpServer()).get(p).set('x-user-id', user),
+      del: (p: string) => request(app.getHttpServer()).delete(p).set('x-user-id', user),
+    });
 
     it('hands out a short-lived link for the stored version that forces a download', async () => {
       const r = await finished();
@@ -189,7 +224,7 @@ describe('HTTP API', () => {
       await as('alice').get(`/files/${r.id}/download`).expect(409);
     });
 
-    it('treats another user\'s file, or an unknown one, as not found', async () => {
+    it("treats another user's file, or an unknown one, as not found", async () => {
       const r = await finished();
       await as('mallory').get(`/files/${r.id}/download`).expect(404);
       await as('alice').get('/files/nope/download').expect(404);

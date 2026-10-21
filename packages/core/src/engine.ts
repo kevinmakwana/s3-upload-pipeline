@@ -66,16 +66,7 @@ export class MemoryResumeStore implements ResumeStore {
   }
 }
 
-export type UploadPhase =
-  | 'idle'
-  | 'preparing'
-  | 'verifying'
-  | 'uploading'
-  | 'completing'
-  | 'done'
-  | 'paused'
-  | 'cancelled'
-  | 'error';
+export type UploadPhase = 'idle' | 'preparing' | 'verifying' | 'uploading' | 'completing' | 'done' | 'paused' | 'cancelled' | 'error';
 
 export interface UploadProgress {
   fileId?: string;
@@ -349,7 +340,8 @@ export class Upload {
       const rec = reconcileParts(plan, remote.parts, this.parts);
 
       const kept: Record<number, LocalPart> = {};
-      for (const n of rec.done) kept[n] = this.parts[n] ?? { sha256: remote.parts.find((p) => p.partNumber === n)!.sha256 ?? '', size: partRange(plan, n).size };
+      for (const n of rec.done)
+        kept[n] = this.parts[n] ?? { sha256: remote.parts.find((p) => p.partNumber === n)!.sha256 ?? '', size: partRange(plan, n).size };
       if (rec.verify.length > 0) {
         this.parts = kept;
         this.setPhase('verifying');
@@ -448,10 +440,7 @@ export class Upload {
         if (signal.aborted || isAbortError(err)) throw abortError();
         if (err instanceof HttpError && err.status === 410) throw new UploadGoneError();
         if (!isRetryable(err) || attempt >= this.options.maxRetries) throw err;
-        await this.options.sleep(
-          backoffDelay(attempt, this.options.baseDelayMs, this.options.maxDelayMs, this.options.random),
-          signal,
-        );
+        await this.options.sleep(backoffDelay(attempt, this.options.baseDelayMs, this.options.maxDelayMs, this.options.random), signal);
       }
     }
   }

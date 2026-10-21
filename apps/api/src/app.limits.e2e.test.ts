@@ -20,9 +20,12 @@ afterEach(async () => {
 async function boot(over: Partial<AppConfig> = {}) {
   const config: AppConfig = { ...testConfig, ...over };
   const moduleRef = await Test.createTestingModule({ imports: [AppModule.register(config)] })
-    .overrideProvider(FILES).useValue(new MemoryFileStore())
-    .overrideProvider(S3).useValue(new FakeS3())
-    .overrideProvider(S3_PRESIGNER).useValue(offlinePresigner())
+    .overrideProvider(FILES)
+    .useValue(new MemoryFileStore())
+    .overrideProvider(S3)
+    .useValue(new FakeS3())
+    .overrideProvider(S3_PRESIGNER)
+    .useValue(offlinePresigner())
     .compile();
   app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app, config);
@@ -42,7 +45,7 @@ describe('security headers and CORS', () => {
     expect(res.headers['x-powered-by']).toBeUndefined();
   });
 
-  it('still answers the browser\'s preflight for the allowed origin, including the bearer token header', async () => {
+  it("still answers the browser's preflight for the allowed origin, including the bearer token header", async () => {
     const http = await boot();
     const res = await http
       .options('/uploads')

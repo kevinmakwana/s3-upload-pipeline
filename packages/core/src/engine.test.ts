@@ -53,8 +53,15 @@ class FakeBackend implements UploadApi, PartTransport {
 
   file(): FileDto {
     return {
-      id: 'f1', fileName: 'big.bin', contentType: 'application/octet-stream', size: FILE_SIZE, status: this.status,
-      partSize: PART_SIZE, partCount: 6, createdAt: 't', updatedAt: 't',
+      id: 'f1',
+      fileName: 'big.bin',
+      contentType: 'application/octet-stream',
+      size: FILE_SIZE,
+      status: this.status,
+      partSize: PART_SIZE,
+      partCount: 6,
+      createdAt: 't',
+      updatedAt: 't',
     };
   }
   async init() {
@@ -68,7 +75,12 @@ class FakeBackend implements UploadApi, PartTransport {
     return { file: this.file(), parts: [...this.parts.values()] };
   }
   async presignPart(_id: string, partNumber: number, sha256: string): Promise<PresignPartResponse> {
-    return { url: `https://s3.test/${partNumber}?sha=${encodeURIComponent(sha256)}`, method: 'PUT', headers: { 'x-amz-checksum-sha256': sha256 }, expiresAt: 'x' };
+    return {
+      url: `https://s3.test/${partNumber}?sha=${encodeURIComponent(sha256)}`,
+      method: 'PUT',
+      headers: { 'x-amz-checksum-sha256': sha256 },
+      expiresAt: 'x',
+    };
   }
   async complete() {
     this.completeCalls++;
@@ -155,7 +167,10 @@ describe('Upload engine', () => {
 
   it('gives up after maxRetries, surfaces the error, and keeps finished parts for resume', async () => {
     const { backend, store, make } = setup({ maxRetries: 2, concurrency: 1 });
-    backend.failures.set(3, Array.from({ length: 10 }, () => new HttpError('boom', 500)));
+    backend.failures.set(
+      3,
+      Array.from({ length: 10 }, () => new HttpError('boom', 500)),
+    );
     const up = make();
     await expect(up.start()).rejects.toThrow('boom');
     expect(up.progress.phase).toBe('error');
@@ -201,7 +216,10 @@ describe('Upload engine', () => {
 
   it('resumes after a "page reload" from persisted state, uploading only what S3 lacks', async () => {
     const first = setup({ concurrency: 1 });
-    first.backend.failures.set(4, Array.from({ length: 10 }, () => new HttpError('boom', 500)));
+    first.backend.failures.set(
+      4,
+      Array.from({ length: 10 }, () => new HttpError('boom', 500)),
+    );
     await expect(first.make().start()).rejects.toThrow();
     const persisted = await first.store.get('f1');
     expect(Object.keys(persisted!.parts).map(Number)).toEqual([1, 2, 3]);
@@ -217,7 +235,10 @@ describe('Upload engine', () => {
 
   it('re-uploads a part that S3 lost even though local state says it is done', async () => {
     const { backend, store, make } = setup({ concurrency: 1 });
-    backend.failures.set(5, Array.from({ length: 10 }, () => new HttpError('boom', 500)));
+    backend.failures.set(
+      5,
+      Array.from({ length: 10 }, () => new HttpError('boom', 500)),
+    );
     await expect(make().start()).rejects.toThrow();
     backend.failures.clear();
     backend.parts.delete(2); // e.g. part overwritten/aborted server-side
@@ -229,7 +250,10 @@ describe('Upload engine', () => {
 
   it('verifies remote parts by hashing the file when local state was wiped', async () => {
     const { backend, store, make } = setup({ concurrency: 1 });
-    backend.failures.set(4, Array.from({ length: 10 }, () => new HttpError('boom', 500)));
+    backend.failures.set(
+      4,
+      Array.from({ length: 10 }, () => new HttpError('boom', 500)),
+    );
     await expect(make().start()).rejects.toThrow();
     const persisted = (await store.get('f1'))!;
     persisted.parts = {}; // IndexedDB cleared
@@ -244,7 +268,10 @@ describe('Upload engine', () => {
 
   it('starts over when the server says the multipart upload is gone', async () => {
     const { backend, store, make } = setup({ concurrency: 1 });
-    backend.failures.set(3, Array.from({ length: 10 }, () => new HttpError('boom', 500)));
+    backend.failures.set(
+      3,
+      Array.from({ length: 10 }, () => new HttpError('boom', 500)),
+    );
     await expect(make().start()).rejects.toThrow();
     backend.failures.clear();
     backend.gone = true;
@@ -261,7 +288,10 @@ describe('Upload engine', () => {
 
   it('returns the file straight away if the server already completed it', async () => {
     const { backend, store, make } = setup({ concurrency: 1 });
-    backend.failures.set(6, Array.from({ length: 10 }, () => new HttpError('boom', 500)));
+    backend.failures.set(
+      6,
+      Array.from({ length: 10 }, () => new HttpError('boom', 500)),
+    );
     await expect(make().start()).rejects.toThrow();
     backend.status = 'processing';
     backend.puts = [];
@@ -286,7 +316,9 @@ describe('Upload engine', () => {
 
   it('rejects resuming with a different file', () => {
     const { make } = setup();
-    expect(() => make({ fileId: 'f1', fileName: 'x', contentType: 'x', fileSize: 1, lastModified: 1, partSize: 1, partCount: 1, parts: {}, createdAt: '', updatedAt: '' })).toThrow(/different size/);
+    expect(() =>
+      make({ fileId: 'f1', fileName: 'x', contentType: 'x', fileSize: 1, lastModified: 1, partSize: 1, partCount: 1, parts: {}, createdAt: '', updatedAt: '' }),
+    ).toThrow(/different size/);
   });
 
   it('reports monotonic byte progress', async () => {

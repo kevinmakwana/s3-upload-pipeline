@@ -30,11 +30,7 @@ export interface Reconciliation {
  * - Remote checksum but no local record -> verify against the file.
  * - Remote part has no checksum -> trust only if we hold a local record.
  */
-export function reconcileParts(
-  plan: PartPlan,
-  remoteParts: readonly RemotePart[],
-  localParts: Readonly<Record<number, LocalPart>>,
-): Reconciliation {
+export function reconcileParts(plan: PartPlan, remoteParts: readonly RemotePart[], localParts: Readonly<Record<number, LocalPart>>): Reconciliation {
   const remote = new Map(remoteParts.map((p) => [p.partNumber, p]));
   const result: Reconciliation = { done: [], upload: [], verify: [] };
 

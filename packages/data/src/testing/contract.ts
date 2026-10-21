@@ -11,9 +11,20 @@ export function newRecord(overrides: Partial<FileRecord> = {}): FileRecord {
   const id = randomUUID();
   const userId = overrides.userId ?? 'alice';
   return {
-    id, userId, fileName: 'a.bin', contentType: 'application/octet-stream', size: 100, status: 'uploading',
-    partSize: 5 * 1024 * 1024, partCount: 1, s3Key: `uploads/${userId}/${id}/a.bin`, s3UploadId: 'u-1',
-    createdAt: T0, updatedAt: T0, expiresAt: 1_900_000_000, ...overrides,
+    id,
+    userId,
+    fileName: 'a.bin',
+    contentType: 'application/octet-stream',
+    size: 100,
+    status: 'uploading',
+    partSize: 5 * 1024 * 1024,
+    partCount: 1,
+    s3Key: `uploads/${userId}/${id}/a.bin`,
+    s3UploadId: 'u-1',
+    createdAt: T0,
+    updatedAt: T0,
+    expiresAt: 1_900_000_000,
+    ...overrides,
   };
 }
 
@@ -21,7 +32,10 @@ export function newRecord(overrides: Partial<FileRecord> = {}): FileRecord {
  * Behavioural contract for FileStore and ProcessingLedger. Runs against the in-memory
  * twin in unit tests and against real DynamoDB (LocalStack) in integration tests.
  */
-export function fileStoreContract(name: string, make: () => Promise<{ store: FileStore; ledger: ProcessingLedger }> | { store: FileStore; ledger: ProcessingLedger }) {
+export function fileStoreContract(
+  name: string,
+  make: () => Promise<{ store: FileStore; ledger: ProcessingLedger }> | { store: FileStore; ledger: ProcessingLedger },
+) {
   describe(`FileStore contract: ${name}`, () => {
     it('creates, reads and lists newest-first per user', async () => {
       const { store } = await make();
@@ -96,7 +110,7 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
         expect((await walk(store, user, 10, false))[0]).toHaveLength(7); // included unless asked
       });
 
-      it('never returns another user\'s records, even with a cursor taken from someone else', async () => {
+      it("never returns another user's records, even with a cursor taken from someone else", async () => {
         const { store } = await make();
         const a = await seed(store, 3);
         const b = await seed(store, 3);
@@ -133,8 +147,14 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
         await mk(100); // uploading
         await mk(200); // uploading
         await mk(400, (id) => store.markUploaded(id, { at: T1 }));
-        await mk(800, async (id) => { await store.markProcessing(id, T1); await store.markReady(id, { sha256: 'a', size: 800 }, T1); });
-        await mk(1600, async (id) => { await store.markProcessing(id, T1); await store.markFailed(id, 'bad', T1); });
+        await mk(800, async (id) => {
+          await store.markProcessing(id, T1);
+          await store.markReady(id, { sha256: 'a', size: 800 }, T1);
+        });
+        await mk(1600, async (id) => {
+          await store.markProcessing(id, T1);
+          await store.markFailed(id, 'bad', T1);
+        });
         await mk(3200, (id) => store.markAborted(id, T1)); // gives its storage back
         await mk(12800, (id) => store.markQuarantined(id, 'malware', T1)); // the object was deleted
         await mk(6400, undefined, 'someone-else');
@@ -161,7 +181,14 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
       it('adds up across more records than one query page returns', async () => {
         const { store } = await make();
         const user = `u${randomUUID().slice(0, 8)}`;
-        for (let i = 0; i < 120; i++) await store.create(newRecord({ userId: user, size: 10, createdAt: `2026-03-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z` }));
+        for (let i = 0; i < 120; i++)
+          await store.create(
+            newRecord({
+              userId: user,
+              size: 10,
+              createdAt: `2026-03-01T00:${String(Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z`,
+            }),
+          );
         expect(await store.usage(user)).toEqual({ activeUploads: 120, storedBytes: 1200 });
       });
     });
@@ -270,23 +297,26 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
         return r;
       };
 
-      it.each([['uploading'], ['uploaded'], ['processing'], ['ready'], ['failed']] as const)('takes a %s file out of service, keeping the reason and dropping the result', async (status) => {
-        const { store } = await make();
-        const r = newRecord();
-        await store.create(r);
-        if (status === 'uploaded') await store.markUploaded(r.id, { at: T1 });
-        if (status === 'processing') await store.markProcessing(r.id, T1);
-        if (status === 'ready') {
-          await store.markProcessing(r.id, T1);
-          await store.markReady(r.id, { sha256: 'a', size: 100, thumbnailKey: 'thumbnails/x.jpg' }, T1);
-        }
-        if (status === 'failed') await store.markFailed(r.id, 'bad', T1);
-        expect(await store.markQuarantined(r.id, 'Malware found: Eicar-Test-Signature', T2)).toBe(true);
-        const after = (await store.get(r.id))!;
-        expect(after).toMatchObject({ status: 'quarantined', error: 'Malware found: Eicar-Test-Signature', updatedAt: T2 });
-        expect(after.result).toBeUndefined();
-        expect(after.expiresAt).toBeUndefined();
-      });
+      it.each([['uploading'], ['uploaded'], ['processing'], ['ready'], ['failed']] as const)(
+        'takes a %s file out of service, keeping the reason and dropping the result',
+        async (status) => {
+          const { store } = await make();
+          const r = newRecord();
+          await store.create(r);
+          if (status === 'uploaded') await store.markUploaded(r.id, { at: T1 });
+          if (status === 'processing') await store.markProcessing(r.id, T1);
+          if (status === 'ready') {
+            await store.markProcessing(r.id, T1);
+            await store.markReady(r.id, { sha256: 'a', size: 100, thumbnailKey: 'thumbnails/x.jpg' }, T1);
+          }
+          if (status === 'failed') await store.markFailed(r.id, 'bad', T1);
+          expect(await store.markQuarantined(r.id, 'Malware found: Eicar-Test-Signature', T2)).toBe(true);
+          const after = (await store.get(r.id))!;
+          expect(after).toMatchObject({ status: 'quarantined', error: 'Malware found: Eicar-Test-Signature', updatedAt: T2 });
+          expect(after.result).toBeUndefined();
+          expect(after.expiresAt).toBeUndefined();
+        },
+      );
 
       it('is final: nothing moves a quarantined file back into service', async () => {
         const { store } = await make();
@@ -363,7 +393,7 @@ export function fileStoreContract(name: string, make: () => Promise<{ store: Fil
       expect(await ledger.begin(key, t(10), lease)).toEqual({ outcome: 'acquired', attempts: 2 });
     });
 
-    it('lets a retry take over after a crashed worker\'s lease expires', async () => {
+    it("lets a retry take over after a crashed worker's lease expires", async () => {
       const { ledger } = await make();
       const key = `k-${randomUUID()}#v1`;
       await ledger.begin(key, t(0), lease);

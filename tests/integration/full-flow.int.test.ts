@@ -31,7 +31,12 @@ async function uploadSmall(api: ReturnType<RunningApi['apiFor']>, name: string, 
   const path = join(dir, `${Math.random().toString(36).slice(2)}-${name}`);
   await writeFile(path, bytes);
   const source = await NodeFileSource.open(path);
-  const out = await new Upload({ api, transport: new FetchTransport(), store: new MemoryResumeStore() }, source, { fileName: name, contentType, lastModified: 1 }, fast).start();
+  const out = await new Upload(
+    { api, transport: new FetchTransport(), store: new MemoryResumeStore() },
+    source,
+    { fileName: name, contentType, lastModified: 1 },
+    fast,
+  ).start();
   await source.close();
   if (out.type !== 'done') throw new Error(`upload ended ${out.type}`);
   return out.file;
@@ -181,7 +186,12 @@ describe('processing', () => {
     // Redeliver the same S3 notification straight onto the queue.
     const sqs = new SQSClient({ region: 'us-east-1', useQueueUrlAsEndpoint: false });
     const body = JSON.stringify({
-      Records: [{ eventName: 'ObjectCreated:CompleteMultipartUpload', s3: { object: { key: await objectKeyFor(ready.id), versionId: await versionFor(ready.id), eTag: 'x' } } }],
+      Records: [
+        {
+          eventName: 'ObjectCreated:CompleteMultipartUpload',
+          s3: { object: { key: await objectKeyFor(ready.id), versionId: await versionFor(ready.id), eTag: 'x' } },
+        },
+      ],
     });
     await sqs.send(new SendMessageCommand({ QueueUrl: process.env.QUEUE_URL, MessageBody: body }));
     await new Promise((r) => setTimeout(r, 8000));
@@ -241,7 +251,7 @@ describe('download and delete', () => {
     await expect(api.deleteFile(ready.id)).rejects.toMatchObject({ status: 404 });
   });
 
-  it('deletes a failed file too, and keeps other users\' files out of reach', async () => {
+  it("deletes a failed file too, and keeps other users' files out of reach", async () => {
     const mallory = server.apiFor(userId());
     const api = server.apiFor(userId());
     const zip = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(2048)]);

@@ -7,12 +7,7 @@ import { parse } from '../common/zod';
 import { FilesService } from './files.service';
 
 const listQuerySchema = z.object({
-  limit: z
-    .string()
-    .regex(/^\d+$/, 'must be a whole number')
-    .transform(Number)
-    .pipe(z.number().min(1).max(MAX_PAGE_SIZE))
-    .optional(),
+  limit: z.string().regex(/^\d+$/, 'must be a whole number').transform(Number).pipe(z.number().min(1).max(MAX_PAGE_SIZE)).optional(),
   cursor: z.string().min(1).max(512).optional(),
 });
 

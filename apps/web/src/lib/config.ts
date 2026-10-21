@@ -61,7 +61,14 @@ function parseAuth(auth: unknown): NonNullable<RuntimeConfig['auth']> {
     if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && local)) throw invalid(`auth.${name} must be https`);
     return v;
   };
-  return { mode: 'oidc', authorizeUrl: url('authorizeUrl'), tokenUrl: url('tokenUrl'), logoutUrl: url('logoutUrl'), clientId: text('clientId'), scope: text('scope') };
+  return {
+    mode: 'oidc',
+    authorizeUrl: url('authorizeUrl'),
+    tokenUrl: url('tokenUrl'),
+    logoutUrl: url('logoutUrl'),
+    clientId: text('clientId'),
+    scope: text('scope'),
+  };
 }
 
 const invalid = (why: string) => new Error(`Invalid /config.json: ${why}`);

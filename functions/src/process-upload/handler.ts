@@ -69,11 +69,7 @@ async function handleMessage(message: SQSRecord, deps: ProcessorDeps): Promise<v
   if (parsed.kind === 'ignore') return;
   const receiveCount = Number(message.attributes?.ApproximateReceiveCount ?? 1);
   for (const record of parsed.records) {
-    await processObject(
-      deps,
-      { key: decodeKey(record.s3.object.key), versionId: record.s3.object.versionId, etag: record.s3.object.eTag },
-      receiveCount,
-    );
+    await processObject(deps, { key: decodeKey(record.s3.object.key), versionId: record.s3.object.versionId, etag: record.s3.object.eTag }, receiveCount);
   }
 }
 

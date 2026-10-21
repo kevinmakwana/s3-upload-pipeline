@@ -29,7 +29,11 @@ export class WebHosting extends Construct {
   /** https://<distribution domain>, which the upload bucket's CORS and the API must allow. */
   readonly origin: string;
 
-  constructor(scope: Construct, id: string, private readonly props: WebHostingProps) {
+  constructor(
+    scope: Construct,
+    id: string,
+    private readonly props: WebHostingProps,
+  ) {
     super(scope, id);
     if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(props.apiDomain) || props.apiDomain.includes('://')) {
       throw new Error(`apiDomain must be a bare host name such as api.example.com, got "${props.apiDomain}"`);

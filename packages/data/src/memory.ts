@@ -32,8 +32,7 @@ export class MemoryFileStore implements FileStore {
     // Plain code-unit comparison, not localeCompare: it must agree with the `<` used for the cursor.
     const desc = (a: string, b: string) => (a < b ? 1 : a > b ? -1 : 0);
     const newestFirst = (a: FileRecord, b: FileRecord) => desc(a.createdAt, b.createdAt) || desc(a.id, b.id);
-    const after = (r: FileRecord) =>
-      !position || r.createdAt < position.createdAt || (r.createdAt === position.createdAt && r.id < position.id);
+    const after = (r: FileRecord) => !position || r.createdAt < position.createdAt || (r.createdAt === position.createdAt && r.id < position.id);
     const matching = [...this.records.values()]
       .filter((r) => r.userId === userId && (!options.excludeAborted || r.status !== 'aborted') && after(r))
       .sort(newestFirst);

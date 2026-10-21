@@ -19,7 +19,7 @@ class SyntheticSource implements PartSource {
   constructor(readonly size: number) {}
   async read(start: number, end: number): Promise<Uint8Array> {
     const out = Buffer.allocUnsafe(end - start);
-    for (let pos = start; pos < end; ) {
+    for (let pos = start; pos < end;) {
       const mib = Math.floor(pos / MiB);
       const offsetInMib = pos - mib * MiB;
       const n = Math.min(MiB - offsetInMib, end - pos);
@@ -96,7 +96,9 @@ async function main() {
       mark(`status "${f.status}"`, t0);
       if (f.status === 'failed') throw new Error(f.error);
       const ok = f.result?.sha256 === expected;
-      console.log(`\nworker sha256  ${f.result?.sha256}\nexpected       ${expected}\n${ok ? 'MATCH' : 'MISMATCH'}  (${f.partCount} parts of ${fmt(f.partSize)}, total ${((Date.now() - t0) / 1000).toFixed(0)}s)`);
+      console.log(
+        `\nworker sha256  ${f.result?.sha256}\nexpected       ${expected}\n${ok ? 'MATCH' : 'MISMATCH'}  (${f.partCount} parts of ${fmt(f.partSize)}, total ${((Date.now() - t0) / 1000).toFixed(0)}s)`,
+      );
       process.exit(ok ? 0 : 1);
     }
     await new Promise((r) => setTimeout(r, 2000));

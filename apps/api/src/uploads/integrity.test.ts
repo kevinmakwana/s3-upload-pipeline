@@ -9,7 +9,9 @@ describe('integrity', () => {
   const parts = chunks.map((c) => ({ etag: `"${md5(c).toString('hex')}"`, sha256: sha(c).toString('base64') }));
 
   it('computes the S3 multipart ETag (md5 of part md5s, plus part count)', () => {
-    const expected = createHash('md5').update(Buffer.concat(chunks.map(md5))).digest('hex');
+    const expected = createHash('md5')
+      .update(Buffer.concat(chunks.map(md5)))
+      .digest('hex');
     expect(expectedMultipartEtag(parts)).toBe(`${expected}-3`);
   });
 
@@ -20,7 +22,9 @@ describe('integrity', () => {
   });
 
   it('computes the composite SHA-256 S3 reports for multipart objects', () => {
-    const expected = createHash('sha256').update(Buffer.concat(chunks.map(sha))).digest('base64');
+    const expected = createHash('sha256')
+      .update(Buffer.concat(chunks.map(sha)))
+      .digest('base64');
     expect(expectedCompositeSha256(parts)).toBe(`${expected}-3`);
   });
 

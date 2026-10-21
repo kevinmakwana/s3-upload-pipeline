@@ -10,7 +10,10 @@ async function setup() {
   const { publicKey, privateKey } = await generateKeyPair('RS256');
   const jwk: JWK = { ...(await exportJWK(publicKey)), alg: 'RS256', kid: 'k1', use: 'sig' };
   const auth = new JwtAuthenticator(createLocalJWKSet({ keys: [jwk] }), { issuer: ISSUER, audience: AUDIENCE });
-  const token = (claims: Record<string, unknown> = {}, opts: { exp?: number | string | null; iss?: string; aud?: string; key?: KeyLike | Uint8Array; alg?: string } = {}) => {
+  const token = (
+    claims: Record<string, unknown> = {},
+    opts: { exp?: number | string | null; iss?: string; aud?: string; key?: KeyLike | Uint8Array; alg?: string } = {},
+  ) => {
     let jwt = new SignJWT({ ...claims })
       .setProtectedHeader({ alg: opts.alg ?? 'RS256', kid: 'k1' })
       .setIssuedAt()
@@ -61,7 +64,13 @@ describe('JwtAuthenticator', () => {
 
   it('rejects an HS256 token signed with the public key as the secret (algorithm confusion)', async () => {
     const { call } = await setup();
-    const forged = await new SignJWT({}).setProtectedHeader({ alg: 'HS256', kid: 'k1' }).setIssuer(ISSUER).setAudience(AUDIENCE).setSubject('admin').setExpirationTime('5m').sign(new TextEncoder().encode('public-key-material'));
+    const forged = await new SignJWT({})
+      .setProtectedHeader({ alg: 'HS256', kid: 'k1' })
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setSubject('admin')
+      .setExpirationTime('5m')
+      .sign(new TextEncoder().encode('public-key-material'));
     await expect(call(forged)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
@@ -79,10 +88,13 @@ describe('JwtAuthenticator', () => {
     await expect(call(`${h}.${payload}.${s}`)).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it.each([undefined, '', 'Basic abc', 'Bearer', 'Bearer not-a-jwt', 'Bearer a.b'])('rejects a missing or malformed Authorization header (%j)', async (header) => {
-    const { auth } = await setup();
-    await expect(auth.authenticate({ authorization: header })).rejects.toBeInstanceOf(UnauthorizedException);
-  });
+  it.each([undefined, '', 'Basic abc', 'Bearer', 'Bearer not-a-jwt', 'Bearer a.b'])(
+    'rejects a missing or malformed Authorization header (%j)',
+    async (header) => {
+      const { auth } = await setup();
+      await expect(auth.authenticate({ authorization: header })).rejects.toBeInstanceOf(UnauthorizedException);
+    },
+  );
 
   it('never reveals why a token was refused', async () => {
     const ctx = await setup();

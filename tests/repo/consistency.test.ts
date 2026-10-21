@@ -11,7 +11,9 @@ describe('repository consistency', () => {
     for (const f of readdirSync(join(root, '.github/workflows'))) {
       for (const m of read(`.github/workflows/${f}`).matchAll(/npm run ([A-Za-z0-9:_-]+)(?!.*\s-w\s)/g)) {
         // Workspace-scoped invocations (-w ...) are checked by npm itself; only root scripts matter here.
-        const line = read(`.github/workflows/${f}`).split('\n').find((l) => l.includes(m[0]))!;
+        const line = read(`.github/workflows/${f}`)
+          .split('\n')
+          .find((l) => l.includes(m[0]))!;
         if (!/\s(-w|--workspace)\b/.test(line)) used.add(m[1]!);
       }
     }
@@ -66,7 +68,8 @@ describe('repository consistency', () => {
 
   it('synthesizes every optional feature together in CI, so a broken combination cannot merge', () => {
     const full = JSON.parse(read('infra/package.json')).scripts['synth:full'] as string;
-    for (const ctx of ['deployApi=true', 'cognito=true', 'deployWeb=true', 'malwareScan=true', 'apiDomain=', 'certificateArn=']) expect(full).toContain(`-c ${ctx}`);
+    for (const ctx of ['deployApi=true', 'cognito=true', 'deployWeb=true', 'malwareScan=true', 'apiDomain=', 'certificateArn='])
+      expect(full).toContain(`-c ${ctx}`);
     expect(read('.github/workflows/ci.yml')).toContain('npm run synth:full');
   });
 

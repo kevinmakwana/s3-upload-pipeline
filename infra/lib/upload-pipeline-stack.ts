@@ -29,9 +29,7 @@ import { WebHosting, webRuntimeConfig } from './web-hosting';
  * How the API authenticates callers. `jwt` verifies bearer tokens from your identity provider.
  * `header` trusts any x-user-id: demo only, and must be chosen on purpose.
  */
-export type ApiAuth =
-  | { mode: 'jwt'; issuer: string; audience: string; jwksUrl: string }
-  | { mode: 'header' };
+export type ApiAuth = { mode: 'jwt'; issuer: string; audience: string; jwksUrl: string } | { mode: 'header' };
 
 export interface UploadPipelineProps extends StackProps {
   /** Target LocalStack: disposable resources, no ECS/ALB. */
@@ -216,9 +214,7 @@ export class UploadPipelineStack extends Stack {
         externalModules: ['@aws-sdk/*'],
       },
     });
-    worker.addEventSource(
-      new SqsEventSource(queue, { batchSize: 1, reportBatchItemFailures: true, maxConcurrency: 5 }),
-    );
+    worker.addEventSource(new SqsEventSource(queue, { batchSize: 1, reportBatchItemFailures: true, maxConcurrency: 5 }));
 
     // Least privilege for the worker: read uploads, write thumbnails, touch two DynamoDB actions.
     worker.addToRolePolicy(
@@ -285,9 +281,7 @@ export class UploadPipelineStack extends Stack {
     const userPool = props.cognito
       ? new UserPoolAuth(this, 'Auth', { name: id, origins: allowedOrigins, selfSignUp: props.cognito.selfSignUp, removalPolicy: removal })
       : undefined;
-    const auth: ApiAuth | undefined = userPool
-      ? { mode: 'jwt', issuer: userPool.issuer, audience: userPool.audience, jwksUrl: userPool.jwksUrl }
-      : props.auth;
+    const auth: ApiAuth | undefined = userPool ? { mode: 'jwt', issuer: userPool.issuer, audience: userPool.audience, jwksUrl: userPool.jwksUrl } : props.auth;
 
     // -------------------------------------------------------------------- API
     // What the API's identity needs and nothing more. Attach it to any role you run the API under.
@@ -351,9 +345,7 @@ export class UploadPipelineStack extends Stack {
       if (!Number.isInteger(apiMaxTasks) || apiMaxTasks < 1) throw new Error(`apiMaxTasks must be a whole number of at least 1, got ${apiMaxTasks}`);
       // No NAT gateway (≈$32/month): tasks sit in public subnets and only the ALB accepts traffic.
       const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 0 });
-      const certificate = props.certificateArn
-        ? acm.Certificate.fromCertificateArn(this, 'ApiCertificate', props.certificateArn)
-        : undefined;
+      const certificate = props.certificateArn ? acm.Certificate.fromCertificateArn(this, 'ApiCertificate', props.certificateArn) : undefined;
       const service = new ecsPatterns.ApplicationLoadBalancedFargateService(this, 'Api', {
         vpc,
         cpu: 256,
@@ -453,7 +445,14 @@ export class UploadPipelineStack extends Stack {
     role.addToPolicy(
       new iam.PolicyStatement({
         sid: 'GuardDutyReadAndTagObjects',
-        actions: ['s3:GetObject', 's3:GetObjectVersion', 's3:GetObjectTagging', 's3:GetObjectVersionTagging', 's3:PutObjectTagging', 's3:PutObjectVersionTagging'],
+        actions: [
+          's3:GetObject',
+          's3:GetObjectVersion',
+          's3:GetObjectTagging',
+          's3:GetObjectVersionTagging',
+          's3:PutObjectTagging',
+          's3:PutObjectVersionTagging',
+        ],
         resources: [bucket.arnForObjects('*')],
       }),
     );
@@ -580,7 +579,14 @@ function addApiScaling(service: ecsPatterns.ApplicationLoadBalancedFargateServic
 
 /** Alarms that say "the API is hurting" without paging for a quiet night (no data is not a breach). */
 function addApiAlarms(scope: Construct, service: ecsPatterns.ApplicationLoadBalancedFargateService, action: cloudwatch.IAlarmAction): void {
-  const make = (id: string, description: string, metric: cloudwatch.IMetric, threshold: number, evaluationPeriods: number, datapointsToAlarm = evaluationPeriods) => {
+  const make = (
+    id: string,
+    description: string,
+    metric: cloudwatch.IMetric,
+    threshold: number,
+    evaluationPeriods: number,
+    datapointsToAlarm = evaluationPeriods,
+  ) => {
     const alarm = new cloudwatch.Alarm(scope, id, {
       alarmDescription: description,
       metric,
@@ -595,12 +601,48 @@ function addApiAlarms(scope: Construct, service: ecsPatterns.ApplicationLoadBala
   const lb = service.loadBalancer.metrics;
   const tg = service.targetGroup.metrics;
 
-  make('ApiServerErrorsAlarm', 'The API is answering with 5xx errors (a bug or a failing dependency).', tg.httpCodeTarget(elbv2.HttpCodeTarget.TARGET_5XX_COUNT, { period: five, statistic: 'Sum' }), 10, 1);
-  make('ApiLoadBalancerErrorsAlarm', 'The load balancer itself is returning 5xx (no healthy task, or tasks are refusing connections).', lb.httpCodeElb(elbv2.HttpCodeElb.ELB_5XX_COUNT, { period: five, statistic: 'Sum' }), 5, 1);
-  make('ApiUnhealthyTargetsAlarm', 'An API task is failing its health check.', tg.unhealthyHostCount({ period: Duration.minutes(1), statistic: 'Maximum' }), 1, 3);
-  make('ApiSlowResponsesAlarm', 'API responses are slow: p95 time to first byte is over three seconds.', tg.targetResponseTime({ period: five, statistic: 'p95' }), 3, 3);
-  make('ApiHighCpuAlarm', 'API CPU has been above 85% for 15 minutes; autoscaling is at its ceiling or not keeping up.', service.service.metricCpuUtilization({ period: five }), 85, 3);
-  make('ApiHighMemoryAlarm', 'API memory has been above 85% for 15 minutes; the task may be about to be killed.', service.service.metricMemoryUtilization({ period: five }), 85, 3);
+  make(
+    'ApiServerErrorsAlarm',
+    'The API is answering with 5xx errors (a bug or a failing dependency).',
+    tg.httpCodeTarget(elbv2.HttpCodeTarget.TARGET_5XX_COUNT, { period: five, statistic: 'Sum' }),
+    10,
+    1,
+  );
+  make(
+    'ApiLoadBalancerErrorsAlarm',
+    'The load balancer itself is returning 5xx (no healthy task, or tasks are refusing connections).',
+    lb.httpCodeElb(elbv2.HttpCodeElb.ELB_5XX_COUNT, { period: five, statistic: 'Sum' }),
+    5,
+    1,
+  );
+  make(
+    'ApiUnhealthyTargetsAlarm',
+    'An API task is failing its health check.',
+    tg.unhealthyHostCount({ period: Duration.minutes(1), statistic: 'Maximum' }),
+    1,
+    3,
+  );
+  make(
+    'ApiSlowResponsesAlarm',
+    'API responses are slow: p95 time to first byte is over three seconds.',
+    tg.targetResponseTime({ period: five, statistic: 'p95' }),
+    3,
+    3,
+  );
+  make(
+    'ApiHighCpuAlarm',
+    'API CPU has been above 85% for 15 minutes; autoscaling is at its ceiling or not keeping up.',
+    service.service.metricCpuUtilization({ period: five }),
+    85,
+    3,
+  );
+  make(
+    'ApiHighMemoryAlarm',
+    'API memory has been above 85% for 15 minutes; the task may be about to be killed.',
+    service.service.metricMemoryUtilization({ period: five }),
+    85,
+    3,
+  );
 }
 
 /**

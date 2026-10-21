@@ -167,7 +167,9 @@ code {
   border-radius: 8px;
   padding: 7px 14px;
   cursor: pointer;
-  transition: background-color 0.12s, border-color 0.12s;
+  transition:
+    background-color 0.12s,
+    border-color 0.12s;
 }
 
 .btn:hover:not(:disabled) {
@@ -224,7 +226,9 @@ code {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  transition: border-color 0.12s, background-color 0.12s;
+  transition:
+    border-color 0.12s,
+    background-color 0.12s;
 }
 
 /* A row of faint part-sized segments along the bottom edge hints at what happens next. */

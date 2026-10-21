@@ -1,5 +1,13 @@
 import { ConditionalCheckFailedException } from '@aws-sdk/client-dynamodb';
-import { DeleteCommand, GetCommand, PutCommand, QueryCommand, UpdateCommand, type DynamoDBDocumentClient, type QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
+import {
+  DeleteCommand,
+  GetCommand,
+  PutCommand,
+  QueryCommand,
+  UpdateCommand,
+  type DynamoDBDocumentClient,
+  type QueryCommandOutput,
+} from '@aws-sdk/lib-dynamodb';
 import type { ProcessingResult } from '@s3up/core';
 import type { FileRecord } from './records';
 import { clampLimit, decodeCursor, encodeCursor } from './cursor';
@@ -216,7 +224,12 @@ export class DynamoFileStore implements FileStore {
 
   private async update(
     fileId: string,
-    params: { UpdateExpression: string; ConditionExpression: string; ExpressionAttributeNames: Record<string, string>; ExpressionAttributeValues: Record<string, unknown> },
+    params: {
+      UpdateExpression: string;
+      ConditionExpression: string;
+      ExpressionAttributeNames: Record<string, string>;
+      ExpressionAttributeValues: Record<string, unknown>;
+    },
   ): Promise<FileRecord> {
     const names = pruneNames(params);
     const res = await this.doc.send(

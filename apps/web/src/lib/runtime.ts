@@ -36,7 +36,9 @@ export const signOut: (() => void) | undefined = session ? () => session.signOut
 export const userId = authMode === 'demo' ? demoUserId() : undefined;
 
 export const getAuthHeaders: HeaderProvider = createAuthHeaders(
-  authMode === 'bearer' ? { mode: 'bearer', getToken: () => (session ? session.getIdToken() : window.s3upAuth?.getToken()) } : { mode: 'demo', userId: userId! },
+  authMode === 'bearer'
+    ? { mode: 'bearer', getToken: () => (session ? session.getIdToken() : window.s3upAuth?.getToken()) }
+    : { mode: 'demo', userId: userId! },
 );
 
 /** The link carries `Content-Disposition: attachment`, so clicking it saves the file and the page stays put. */

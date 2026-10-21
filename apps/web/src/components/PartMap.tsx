@@ -30,13 +30,7 @@ export const PartMap = memo(function PartMap({ states, partCount, tone, label }:
       else if (s === 1) active = true;
     }
     const fill = done / (to - from);
-    items.push(
-      <i
-        key={c}
-        className={active ? 'cell is-active' : 'cell'}
-        style={{ '--fill': `${Math.round(fill * 100)}%` } as React.CSSProperties}
-      />,
-    );
+    items.push(<i key={c} className={active ? 'cell is-active' : 'cell'} style={{ '--fill': `${Math.round(fill * 100)}%` } as React.CSSProperties} />);
   }
   return (
     <div className={`partmap tone-${tone}`} role="img" aria-label={label} style={{ gridTemplateColumns: `repeat(${cells}, 1fr)` }}>

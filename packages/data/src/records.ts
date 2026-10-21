@@ -27,7 +27,15 @@ export interface FileRecord {
 export function toDto(record: FileRecord, extras: Pick<FileDto, 'thumbnailUrl'> = {}): FileDto {
   const { id, fileName, contentType, size, status, partSize, partCount, createdAt, updatedAt } = record;
   return {
-    id, fileName, contentType, size, status, partSize, partCount, createdAt, updatedAt,
+    id,
+    fileName,
+    contentType,
+    size,
+    status,
+    partSize,
+    partCount,
+    createdAt,
+    updatedAt,
     uploadedAt: record.uploadedAt,
     processedAt: record.processedAt,
     error: record.error,

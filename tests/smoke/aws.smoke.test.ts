@@ -30,7 +30,8 @@ const user = `smoke-${randomBytes(4).toString('hex')}`;
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 's3up-smoke-'));
   if (process.env.SMOKE_FULL_ACCESS !== 'true') {
-    if (!process.env.API_POLICY_ARN) throw new Error('The stack outputs have no ApiPolicyArn; redeploy, or set SMOKE_FULL_ACCESS=true to skip the permission check.');
+    if (!process.env.API_POLICY_ARN)
+      throw new Error('The stack outputs have no ApiPolicyArn; redeploy, or set SMOKE_FULL_ACCESS=true to skip the permission check.');
     restricted = await assumeApiPolicy(process.env.API_POLICY_ARN);
     for (const [k, v] of Object.entries(restricted.env)) {
       saved[k] = process.env[k];

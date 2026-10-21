@@ -188,9 +188,7 @@ export class UploadsService {
 
     const problems = await this.verifyObject(record, digests, done);
     if (problems.length) {
-      await this.s3
-        .send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: record.s3Key, VersionId: done.VersionId }))
-        .catch(() => undefined);
+      await this.s3.send(new DeleteObjectCommand({ Bucket: this.config.bucket, Key: record.s3Key, VersionId: done.VersionId })).catch(() => undefined);
       await this.files.markFailed(record.id, `Integrity check failed: ${problems.join('; ')}`, this.now().toISOString());
       throw new UnprocessableEntityException({ message: 'Integrity check failed', problems });
     }
@@ -208,11 +206,9 @@ export class UploadsService {
     const record = await this.owned(userId, fileId);
     if (record.status === 'aborted') return;
     if (record.status !== 'uploading') throw new ConflictException(`Cannot abort an upload that is ${record.status}`);
-    await this.s3
-      .send(new AbortMultipartUploadCommand({ Bucket: this.config.bucket, Key: record.s3Key, UploadId: record.s3UploadId }))
-      .catch((err) => {
-        if (err?.name !== 'NoSuchUpload') throw err;
-      });
+    await this.s3.send(new AbortMultipartUploadCommand({ Bucket: this.config.bucket, Key: record.s3Key, UploadId: record.s3UploadId })).catch((err) => {
+      if (err?.name !== 'NoSuchUpload') throw err;
+    });
     await this.files.markAborted(record.id, this.now().toISOString());
   }
 
@@ -265,11 +261,7 @@ export class UploadsService {
     }
   }
 
-  private async verifyObject(
-    record: FileRecord,
-    digests: PartDigest[],
-    done: { ETag?: string; ChecksumSHA256?: string },
-  ): Promise<string[]> {
+  private async verifyObject(record: FileRecord, digests: PartDigest[], done: { ETag?: string; ChecksumSHA256?: string }): Promise<string[]> {
     const problems: string[] = [];
     const etag = normalizeEtag(done.ETag);
     const expected = expectedMultipartEtag(digests);

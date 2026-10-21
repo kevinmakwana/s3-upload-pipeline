@@ -18,13 +18,25 @@ describe('HTTP API with JWT authentication', () => {
     const { publicKey, privateKey } = await generateKeyPair('ES256');
     const jwks = createLocalJWKSet({ keys: [{ ...(await exportJWK(publicKey)), alg: 'ES256', kid: 'k' }] });
     sign = (sub, over = {}) =>
-      new SignJWT({}).setProtectedHeader({ alg: 'ES256', kid: 'k' }).setIssuer('https://idp/').setAudience(over.aud ?? 'api').setSubject(sub).setExpirationTime('5m').sign(privateKey);
+      new SignJWT({})
+        .setProtectedHeader({ alg: 'ES256', kid: 'k' })
+        .setIssuer('https://idp/')
+        .setAudience(over.aud ?? 'api')
+        .setSubject(sub)
+        .setExpirationTime('5m')
+        .sign(privateKey);
 
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule.register({ ...testConfig, auth: { mode: 'jwt', issuer: 'https://idp/', audience: 'api', jwksUrl: 'https://idp/jwks' } })] })
-      .overrideProvider(FILES).useValue(new MemoryFileStore())
-      .overrideProvider(S3).useValue(new FakeS3())
-      .overrideProvider(S3_PRESIGNER).useValue(offlinePresigner())
-      .overrideProvider(AUTHENTICATOR).useValue(new JwtAuthenticator(jwks, { issuer: 'https://idp/', audience: 'api' }))
+    const moduleRef = await Test.createTestingModule({
+      imports: [AppModule.register({ ...testConfig, auth: { mode: 'jwt', issuer: 'https://idp/', audience: 'api', jwksUrl: 'https://idp/jwks' } })],
+    })
+      .overrideProvider(FILES)
+      .useValue(new MemoryFileStore())
+      .overrideProvider(S3)
+      .useValue(new FakeS3())
+      .overrideProvider(S3_PRESIGNER)
+      .useValue(offlinePresigner())
+      .overrideProvider(AUTHENTICATOR)
+      .useValue(new JwtAuthenticator(jwks, { issuer: 'https://idp/', audience: 'api' }))
       .compile();
     app = moduleRef.createNestApplication();
     await app.init();
@@ -46,7 +58,10 @@ describe('HTTP API with JWT authentication', () => {
   });
 
   it('rejects tokens for the wrong audience', async () => {
-    await request(app.getHttpServer()).get('/files').set('authorization', `Bearer ${await sign('alice', { aud: 'other' })}`).expect(401);
+    await request(app.getHttpServer())
+      .get('/files')
+      .set('authorization', `Bearer ${await sign('alice', { aud: 'other' })}`)
+      .expect(401);
   });
 
   it('serves the owner and isolates users, with identities taken from the token alone', async () => {
@@ -58,7 +73,11 @@ describe('HTTP API with JWT authentication', () => {
 
     await http.get(`/files/${id}`).set('authorization', alice).expect(200);
     await http.get(`/files/${id}`).set('authorization', mallory).expect(404);
-    await http.post(`/uploads/${id}/parts/1/presign`).set('authorization', mallory).send({ sha256: Buffer.alloc(32, 1).toString('base64') }).expect(404);
+    await http
+      .post(`/uploads/${id}/parts/1/presign`)
+      .set('authorization', mallory)
+      .send({ sha256: Buffer.alloc(32, 1).toString('base64') })
+      .expect(404);
     expect((await http.get('/files').set('authorization', mallory).expect(200)).body.files).toEqual([]);
     expect((await http.get('/files').set('authorization', alice).expect(200)).body.files).toHaveLength(1);
   });

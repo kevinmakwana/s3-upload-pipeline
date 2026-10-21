@@ -59,13 +59,17 @@ describe('HttpUploadApi', () => {
     expect(calls[0]!.init.method).toBe('GET');
   });
 
-  it('deletes a file with DELETE /files/:id and surfaces the server\'s reason when refused', async () => {
+  it("deletes a file with DELETE /files/:id and surfaces the server's reason when refused", async () => {
     const { fn, calls } = fakeFetch(() => new Response(null, { status: 204 }));
     const api = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn });
     await expect(api.deleteFile('f1')).resolves.toBeUndefined();
     expect(calls[0]).toMatchObject({ url: 'http://api/files/f1', init: { method: 'DELETE' } });
 
-    const refused = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fakeFetch(() => json({ message: 'File is processing; try again when processing has finished' }, 409)).fn });
+    const refused = new HttpUploadApi({
+      baseUrl: 'http://api',
+      userId: 'a',
+      fetch: fakeFetch(() => json({ message: 'File is processing; try again when processing has finished' }, 409)).fn,
+    });
     await expect(refused.deleteFile('f1')).rejects.toMatchObject({ status: 409, message: expect.stringContaining('processing') });
   });
 
@@ -78,7 +82,11 @@ describe('HttpUploadApi', () => {
 
   it('sends JSON bodies and unwraps responses', async () => {
     const { fn, calls } = fakeFetch(() => json({ file: { id: 'f1' } }, 201));
-    const file = await new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn }).init({ fileName: 'a.bin', fileSize: 1, contentType: 'application/octet-stream' });
+    const file = await new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn }).init({
+      fileName: 'a.bin',
+      fileSize: 1,
+      contentType: 'application/octet-stream',
+    });
     expect(file).toEqual({ id: 'f1' });
     expect(headersOf(calls[0]!)['content-type']).toBe('application/json');
     expect(JSON.parse(calls[0]!.init.body as string)).toMatchObject({ fileName: 'a.bin' });
@@ -91,10 +99,19 @@ describe('HttpUploadApi', () => {
   });
 
   it('treats a network failure as retryable (no status) and 5xx as retryable by default', async () => {
-    const down = new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch });
+    const down = new HttpUploadApi({
+      baseUrl: 'http://api',
+      userId: 'a',
+      fetch: (async () => {
+        throw new TypeError('fetch failed');
+      }) as unknown as typeof fetch,
+    });
     expect(await down.listFiles().catch((e) => e)).toMatchObject({ status: undefined, message: 'fetch failed' });
     const { fn } = fakeFetch(() => new Response('oops', { status: 503 }));
-    expect(await new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn }).listFiles().catch((e) => e)).toMatchObject({ status: 503, message: 'HTTP 503' });
+    expect(await new HttpUploadApi({ baseUrl: 'http://api', userId: 'a', fetch: fn }).listFiles().catch((e) => e)).toMatchObject({
+      status: 503,
+      message: 'HTTP 503',
+    });
   });
 
   it('handles 204 No Content from abort()', async () => {
