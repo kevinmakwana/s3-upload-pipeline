@@ -7,7 +7,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1149.0",
+    "@aws-sdk/client-s3": "^3.1153.0",
     "@s3up/core": "*",
     "@s3up/data": "*",
     "jimp": "^1.6.1"
