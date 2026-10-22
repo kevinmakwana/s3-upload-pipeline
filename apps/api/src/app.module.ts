@@ -51,9 +51,7 @@ export class AppModule {
         {
           provide: AUTHENTICATOR,
           useFactory: () =>
-            config.auth.mode === 'jwt'
-              ? new JwtAuthenticator(createRemoteJWKSet(new URL(config.auth.jwksUrl)), config.auth)
-              : new HeaderAuthenticator(),
+            config.auth.mode === 'jwt' ? new JwtAuthenticator(createRemoteJWKSet(new URL(config.auth.jwksUrl)), config.auth) : new HeaderAuthenticator(),
         },
         // Guards run in this order: rate limits first, so a flood of bad credentials is turned away
         // before any token is verified; then authenticate every route (opt out with @Public()).

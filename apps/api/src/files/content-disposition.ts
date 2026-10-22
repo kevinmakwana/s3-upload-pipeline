@@ -7,6 +7,7 @@ const LONE_SURROGATE = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[
  * fallback loses anything that could end the quote, and the real name travels in RFC 5987 form.
  */
 export function attachmentDisposition(fileName: string): string {
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point
   const clean = fileName.replace(LONE_SURROGATE, '\ufffd').replace(/[\u0000-\u001f\u007f]/g, '');
   const fallback = clean.replace(/[^\x20-\x7e]|["\\%]/g, '_');
   const encoded = encodeURIComponent(clean).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);

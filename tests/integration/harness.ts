@@ -53,17 +53,13 @@ export class FetchTransport implements PartTransport {
       if ((err as Error).name === 'AbortError') throw err;
       throw new HttpError((err as Error).message);
     }
-    if (!res.ok) throw new HttpError(`S3 PUT failed: ${res.status} ${await res.text()}`, res.status, res.status === 400 || res.status === 403 ? true : undefined);
+    if (!res.ok)
+      throw new HttpError(`S3 PUT failed: ${res.status} ${await res.text()}`, res.status, res.status === 400 || res.status === 403 ? true : undefined);
     req.onProgress(req.body.byteLength);
   }
 }
 
-export async function waitForFile(
-  api: HttpUploadApi,
-  fileId: string,
-  done: (f: FileDto) => boolean,
-  timeoutMs = 240_000,
-): Promise<FileDto> {
+export async function waitForFile(api: HttpUploadApi, fileId: string, done: (f: FileDto) => boolean, timeoutMs = 240_000): Promise<FileDto> {
   const start = Date.now();
   for (;;) {
     const file = await api.getFile(fileId);

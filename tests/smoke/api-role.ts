@@ -28,7 +28,14 @@ export async function assumeApiPolicy(policyArn: string): Promise<Restricted> {
       MaxSessionDuration: 3600,
       AssumeRolePolicyDocument: JSON.stringify({
         Version: '2012-10-17',
-        Statement: [{ Effect: 'Allow', Principal: { AWS: `arn:aws:iam::${Account}:root` }, Action: 'sts:AssumeRole', Condition: { StringEquals: { 'aws:PrincipalArn': me.replace(/:assumed-role\/([^/]+)\/.*/, ':role/$1') } } }],
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { AWS: `arn:aws:iam::${Account}:root` },
+            Action: 'sts:AssumeRole',
+            Condition: { StringEquals: { 'aws:PrincipalArn': me.replace(/:assumed-role\/([^/]+)\/.*/, ':role/$1') } },
+          },
+        ],
       }),
       Tags: [{ Key: 'purpose', Value: 's3up-smoke-test' }],
     }),
@@ -50,7 +57,11 @@ export async function assumeApiPolicy(policyArn: string): Promise<Restricted> {
         const { Credentials } = await sts.send(new AssumeRoleCommand({ RoleArn: arn, RoleSessionName: 'smoke', DurationSeconds: 3600 }));
         if (!Credentials?.AccessKeyId) throw new Error('No credentials returned');
         return {
-          env: { AWS_ACCESS_KEY_ID: Credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: Credentials.SecretAccessKey!, AWS_SESSION_TOKEN: Credentials.SessionToken! },
+          env: {
+            AWS_ACCESS_KEY_ID: Credentials.AccessKeyId,
+            AWS_SECRET_ACCESS_KEY: Credentials.SecretAccessKey!,
+            AWS_SESSION_TOKEN: Credentials.SessionToken!,
+          },
           cleanup,
         };
       } catch (err) {

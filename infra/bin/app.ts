@@ -35,7 +35,5 @@ new UploadPipelineStack(app, String(app.node.tryGetContext('stackName') ?? 'Uplo
   malwareScan: flag('malwareScan'),
   apiDomain: text('apiDomain'),
   apiMaxTasks: text('apiMaxTasks') === undefined ? undefined : Number(text('apiMaxTasks')),
-  env: process.env.CDK_DEFAULT_ACCOUNT
-    ? { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION }
-    : undefined,
+  env: process.env.CDK_DEFAULT_ACCOUNT ? { account: process.env.CDK_DEFAULT_ACCOUNT, region: process.env.CDK_DEFAULT_REGION } : undefined,
 });

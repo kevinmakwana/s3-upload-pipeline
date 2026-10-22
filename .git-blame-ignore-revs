@@ -1,0 +1,3 @@
+# Commits that only reformat code, so git blame skips them.
+# Use: git config blame.ignoreRevsFile .git-blame-ignore-revs
+17726a67b71e5502ce0180c27fcc9443f419cc5c

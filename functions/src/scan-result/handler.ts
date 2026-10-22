@@ -21,10 +21,7 @@ export interface ScanResultDeps {
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
 
-export type ScanOutcome =
-  | { type: 'quarantined'; fileId: string }
-  | { type: 'recorded'; status: string }
-  | { type: 'ignored'; reason: string };
+export type ScanOutcome = { type: 'quarantined'; fileId: string } | { type: 'recorded'; status: string } | { type: 'ignored'; reason: string };
 
 /** The longest reason kept on the record. */
 const MAX_REASON = 280;

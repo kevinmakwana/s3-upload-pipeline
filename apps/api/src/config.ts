@@ -76,7 +76,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     bucket: required('BUCKET_NAME'),
     table: required('TABLE_NAME'),
     s3PublicEndpoint: env.S3_PUBLIC_ENDPOINT || undefined,
-    corsOrigins: (env.CORS_ORIGINS ?? 'http://localhost:5173').split(',').map((s) => s.trim()).filter(Boolean),
+    corsOrigins: (env.CORS_ORIGINS ?? 'http://localhost:5173')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
     rules: { maxFileSize: int(env.MAX_FILE_SIZE_BYTES, DEFAULT_MAX_FILE_SIZE), allowedTypes: DEFAULT_ALLOWED_TYPES },
     preferredPartSize: int(env.PART_SIZE_BYTES, DEFAULT_PART_SIZE),
     // Short-lived by design; clamped so a typo can't mint week-long URLs.

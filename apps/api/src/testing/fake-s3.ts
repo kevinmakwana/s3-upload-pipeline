@@ -36,6 +36,8 @@ export class FakeS3 {
   listPageSize = 1000;
   private counter = 0;
 
+  // Stands in for S3Client.send, whose result type depends on the command; callers cast it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async send(command: unknown): Promise<any> {
     this.commands.push(command);
     if (command instanceof CreateMultipartUploadCommand) {
@@ -58,8 +60,12 @@ export class FakeS3 {
     if (command instanceof CompleteMultipartUploadCommand) {
       const up = this.mustGet(command.input.UploadId!);
       const ordered = [...up.parts.entries()].sort((a, b) => a[0] - b[0]).map(([, p]) => p);
-      const etag = createHash('md5').update(Buffer.concat(ordered.map((p) => Buffer.from(p.etag, 'hex')))).digest('hex');
-      const sha = createHash('sha256').update(Buffer.concat(ordered.map((p) => Buffer.from(p.sha256, 'base64')))).digest('base64');
+      const etag = createHash('md5')
+        .update(Buffer.concat(ordered.map((p) => Buffer.from(p.etag, 'hex'))))
+        .digest('hex');
+      const sha = createHash('sha256')
+        .update(Buffer.concat(ordered.map((p) => Buffer.from(p.sha256, 'base64'))))
+        .digest('base64');
       this.objects.set(up.key, { size: ordered.reduce((n, p) => n + p.size, 0) });
       this.versions.push({ Key: up.key, VersionId: 'v1', marker: false });
       this.uploads.delete(command.input.UploadId!);
@@ -82,7 +88,8 @@ export class FakeS3 {
     }
     if (command instanceof ListObjectVersionsCommand) {
       // Markers are positions (key, then version id), as in S3, so deleting earlier entries between pages is safe.
-      const order = (a: { Key: string; VersionId: string }, b: { Key: string; VersionId: string }) => a.Key.localeCompare(b.Key) || a.VersionId.localeCompare(b.VersionId);
+      const order = (a: { Key: string; VersionId: string }, b: { Key: string; VersionId: string }) =>
+        a.Key.localeCompare(b.Key) || a.VersionId.localeCompare(b.VersionId);
       const { KeyMarker, VersionIdMarker } = command.input;
       const after = (v: { Key: string; VersionId: string }) => !KeyMarker || order(v, { Key: KeyMarker, VersionId: VersionIdMarker ?? '' }) > 0;
       const matching = this.versions.filter((v) => v.Key.startsWith(command.input.Prefix ?? '') && after(v)).sort(order);
@@ -132,7 +139,10 @@ export class FakeS3 {
 
   /** Version ids currently stored for exactly this key. */
   versionsOf(key: string): string[] {
-    return this.versions.filter((v) => v.Key === key).map((v) => v.VersionId).sort();
+    return this.versions
+      .filter((v) => v.Key === key)
+      .map((v) => v.VersionId)
+      .sort();
   }
 
   /** Simulates a browser PUT of a part landing in S3. */

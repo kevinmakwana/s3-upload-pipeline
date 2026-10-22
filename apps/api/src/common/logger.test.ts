@@ -36,7 +36,7 @@ describe('JsonLogger', () => {
     expect(silent.lines).toEqual([]);
   });
 
-  it('turns Nest\'s own log calls into the same format, keeping the context and the stack', () => {
+  it("turns Nest's own log calls into the same format, keeping the context and the stack", () => {
     const { logger, parsed } = capture('debug');
     logger.log('Starting Nest application...', 'NestFactory');
     logger.warn('careful', 'Ctx');

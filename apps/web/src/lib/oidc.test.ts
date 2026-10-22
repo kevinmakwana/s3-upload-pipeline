@@ -55,7 +55,9 @@ function rig(opts: { search?: string; respond?: (body: URLSearchParams) => Respo
 }
 
 const tokens = (idExpSeconds: number, extra: object = {}) =>
-  new Response(JSON.stringify({ id_token: jwt(idExpSeconds), access_token: 'a', refresh_token: 'r1', expires_in: 3600, token_type: 'Bearer', ...extra }), { status: 200 });
+  new Response(JSON.stringify({ id_token: jwt(idExpSeconds), access_token: 'a', refresh_token: 'r1', expires_in: 3600, token_type: 'Bearer', ...extra }), {
+    status: 200,
+  });
 
 describe('OidcSession', () => {
   describe('signing in', () => {
@@ -136,7 +138,10 @@ describe('OidcSession', () => {
     it('fails with the server message when the code exchange is rejected', async () => {
       const first = rig();
       await first.session.start();
-      const r = rig({ search: `?code=abc&state=${first.storage.getItem('s3up:oidc:state')}`, respond: () => new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }) });
+      const r = rig({
+        search: `?code=abc&state=${first.storage.getItem('s3up:oidc:state')}`,
+        respond: () => new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 }),
+      });
       for (const [k, v] of first.storage.data) r.storage.setItem(k, v);
       await expect(r.session.start()).rejects.toThrow(/invalid_grant/);
     });

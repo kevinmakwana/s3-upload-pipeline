@@ -22,10 +22,14 @@ type Line = Record<string, unknown>;
 async function boot(files: MemoryFileStore = new MemoryFileStore()) {
   const lines: string[] = [];
   const moduleRef = await Test.createTestingModule({ imports: [AppModule.register(testConfig)] })
-    .overrideProvider(LOGGER).useValue(new JsonLogger('debug', (l) => lines.push(l)))
-    .overrideProvider(FILES).useValue(files)
-    .overrideProvider(S3).useValue(new FakeS3())
-    .overrideProvider(S3_PRESIGNER).useValue(offlinePresigner())
+    .overrideProvider(LOGGER)
+    .useValue(new JsonLogger('debug', (l) => lines.push(l)))
+    .overrideProvider(FILES)
+    .useValue(files)
+    .overrideProvider(S3)
+    .useValue(new FakeS3())
+    .overrideProvider(S3_PRESIGNER)
+    .useValue(offlinePresigner())
     .compile();
   app = moduleRef.createNestApplication<NestExpressApplication>();
   configureApp(app, testConfig);
@@ -57,7 +61,11 @@ describe('request logging', () => {
   it('never logs credentials or request bodies', async () => {
     const { http, lines } = await boot();
     await http.get('/files').set('authorization', 'Bearer TOP.SECRET.TOKEN').expect(401);
-    await http.post('/uploads').set('x-user-id', 'alice').send({ fileName: 'private-name.mp4', fileSize: 12 * MiB, contentType: 'video/mp4' }).expect(201);
+    await http
+      .post('/uploads')
+      .set('x-user-id', 'alice')
+      .send({ fileName: 'private-name.mp4', fileSize: 12 * MiB, contentType: 'video/mp4' })
+      .expect(201);
     const everything = lines.join('\n');
     expect(everything).not.toContain('TOP.SECRET.TOKEN');
     expect(everything).not.toContain('private-name');
@@ -116,8 +124,13 @@ describe('unexpected errors', () => {
 
     const error = all().find((l) => l.message === 'unhandled error')!;
     expect(error).toMatchObject({
-      level: 'error', method: 'GET', path: '/files', userId: 'alice', status: 500,
-      errorName: 'Error', errorMessage: 'DynamoDB exploded: table s3up-secret-table',
+      level: 'error',
+      method: 'GET',
+      path: '/files',
+      userId: 'alice',
+      status: 500,
+      errorName: 'Error',
+      errorMessage: 'DynamoDB exploded: table s3up-secret-table',
     });
     expect(error.stack).toEqual(expect.stringContaining('exploded'));
     expect(error.requestId).toBe(res.headers['x-request-id']);

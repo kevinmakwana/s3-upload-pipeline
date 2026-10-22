@@ -41,7 +41,9 @@ function setup() {
   const ledger = new MemoryLedger();
   const storage = new FakeStorage();
   const deps: ProcessorDeps = {
-    files, ledger, storage,
+    files,
+    ledger,
+    storage,
     config: { thumbnailMaxBytes: 1024 * 1024, leaseMs: 60_000, maxReceiveCount: 3 },
     log: () => undefined,
   };
@@ -223,10 +225,7 @@ describe('handleBatch (SQS partial batch response)', () => {
     const good = await addFile(Buffer.from('good'));
     const bad = await addFile(Buffer.from('bad'));
     storage.objects.delete(bad.s3Key); // head() fails -> transient error
-    const res = await handleBatch(
-      { Records: [message('m1', s3Body(good.s3Key)), message('m2', s3Body(bad.s3Key)), message('m3', 'not json')] },
-      deps,
-    );
+    const res = await handleBatch({ Records: [message('m1', s3Body(good.s3Key)), message('m2', s3Body(bad.s3Key)), message('m3', 'not json')] }, deps);
     expect(res.batchItemFailures.map((f) => f.itemIdentifier).sort()).toEqual(['m2', 'm3']);
   });
 

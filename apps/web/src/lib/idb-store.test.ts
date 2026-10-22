@@ -2,8 +2,16 @@ import 'fake-indexeddb/auto';
 import { IndexedDbResumeStore } from './idb-store';
 
 const upload = (fileId: string) => ({
-  fileId, fileName: 'big.bin', contentType: 'application/octet-stream', fileSize: 100, lastModified: 1,
-  partSize: 10, partCount: 10, parts: { 1: { sha256: 'a', size: 10 }, 2: { sha256: 'b', size: 10 } }, createdAt: 't', updatedAt: 't',
+  fileId,
+  fileName: 'big.bin',
+  contentType: 'application/octet-stream',
+  fileSize: 100,
+  lastModified: 1,
+  partSize: 10,
+  partCount: 10,
+  parts: { 1: { sha256: 'a', size: 10 }, 2: { sha256: 'b', size: 10 } },
+  createdAt: 't',
+  updatedAt: 't',
 });
 
 describe('IndexedDbResumeStore', () => {

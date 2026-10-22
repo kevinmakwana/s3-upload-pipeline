@@ -17,7 +17,10 @@ describe('auth configuration', () => {
     expect(() => loadConfig(jwt)).toThrow(/JWT_JWKS_URL/);
     expect(() => loadConfig({ ...jwt, JWT_JWKS_URL: 'https://idp/.well-known/jwks.json' })).toThrow(/JWT_ISSUER/);
     expect(loadConfig({ ...jwt, JWT_JWKS_URL: 'https://idp/jwks', JWT_ISSUER: 'https://idp/', JWT_AUDIENCE: 'api' }).auth).toEqual({
-      mode: 'jwt', issuer: 'https://idp/', audience: 'api', jwksUrl: 'https://idp/jwks',
+      mode: 'jwt',
+      issuer: 'https://idp/',
+      audience: 'api',
+      jwksUrl: 'https://idp/jwks',
     });
   });
 
@@ -42,8 +45,13 @@ describe('limits configuration', () => {
 
   it('reads overrides, and 0 turns a quota off', () => {
     const c = loadConfig({
-      ...base, MAX_ACTIVE_UPLOADS_PER_USER: '0', MAX_STORED_BYTES_PER_USER: '5000', RATE_LIMIT_IP_PER_MINUTE: '50',
-      RATE_LIMIT_USER_PER_MINUTE: '60', RATE_LIMIT_INIT_PER_MINUTE: '3', TRUST_PROXY_HOPS: '1',
+      ...base,
+      MAX_ACTIVE_UPLOADS_PER_USER: '0',
+      MAX_STORED_BYTES_PER_USER: '5000',
+      RATE_LIMIT_IP_PER_MINUTE: '50',
+      RATE_LIMIT_USER_PER_MINUTE: '60',
+      RATE_LIMIT_INIT_PER_MINUTE: '3',
+      TRUST_PROXY_HOPS: '1',
     });
     expect(c.quotas).toEqual({ maxActiveUploads: 0, maxStoredBytes: 5000 });
     expect(c.rateLimits).toEqual({ ipPerMinute: 50, callerPerMinute: 60, initPerMinute: 3 });

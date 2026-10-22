@@ -52,7 +52,12 @@ describe('loadRuntimeConfig', () => {
   });
 
   it('allows a plain-http login address on localhost, for development', async () => {
-    const auth = { ...oidc, authorizeUrl: 'http://localhost:9000/authorize', tokenUrl: 'http://localhost:9000/token', logoutUrl: 'http://localhost:9000/logout' };
+    const auth = {
+      ...oidc,
+      authorizeUrl: 'http://localhost:9000/authorize',
+      tokenUrl: 'http://localhost:9000/token',
+      logoutUrl: 'http://localhost:9000/logout',
+    };
     expect(await loadRuntimeConfig(async () => json({ auth }))).toEqual({ auth });
   });
 });

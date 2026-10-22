@@ -1,8 +1,6 @@
 import { HttpError, type HeaderProvider } from '@s3up/core';
 
-export type AuthSetup =
-  | { mode: 'demo'; userId: string }
-  | { mode: 'bearer'; getToken?: () => string | undefined | Promise<string | undefined> };
+export type AuthSetup = { mode: 'demo'; userId: string } | { mode: 'bearer'; getToken?: () => string | undefined | Promise<string | undefined> };
 
 /**
  * The headers that identify the caller, asked for before every request.

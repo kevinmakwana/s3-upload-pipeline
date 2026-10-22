@@ -1,4 +1,11 @@
-import { BadRequestException, ConflictException, GoneException, NotFoundException, PayloadTooLargeException, UnprocessableEntityException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  GoneException,
+  NotFoundException,
+  PayloadTooLargeException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { CreateMultipartUploadCommand } from '@aws-sdk/client-s3';
 import { MiB, parseObjectKey, partRange } from '@s3up/core';
 import { makeService } from '../testing/harness';
@@ -48,7 +55,8 @@ describe('init', () => {
 });
 
 describe('per-user quotas', () => {
-  const quotas = (over: Partial<{ maxActiveUploads: number; maxStoredBytes: number }> = {}) => makeService({ quotas: { maxActiveUploads: 0, maxStoredBytes: 0, ...over } });
+  const quotas = (over: Partial<{ maxActiveUploads: number; maxStoredBytes: number }> = {}) =>
+    makeService({ quotas: { maxActiveUploads: 0, maxStoredBytes: 0, ...over } });
 
   it('stops a user starting more uploads than the limit, with a conflict that says what to do', async () => {
     const ctx = quotas({ maxActiveUploads: 2 });
@@ -63,7 +71,7 @@ describe('per-user quotas', () => {
     await expect(ctx.service.init('alice', init())).resolves.toMatchObject({ status: 'uploading' });
   });
 
-  it('counts only the caller\'s own uploads, and finished ones do not occupy a slot', async () => {
+  it("counts only the caller's own uploads, and finished ones do not occupy a slot", async () => {
     const ctx = quotas({ maxActiveUploads: 1 });
     const done = await ctx.service.init('alice', init());
     await ctx.files.markProcessing(done.id, new Date().toISOString());

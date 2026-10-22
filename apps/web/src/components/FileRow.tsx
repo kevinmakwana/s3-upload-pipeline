@@ -23,12 +23,20 @@ export function FileRow({ local, file, action }: Props) {
   const busy = local ? BUSY.has(local.phase) : false;
 
   const tone: PartMapTone = local
-    ? local.phase === 'error' ? 'failed' : busy ? 'uploading' : 'paused'
-    : status === 'failed' || status === 'quarantined' ? 'failed' : status === 'ready' ? 'ready' : status === 'processing' || status === 'uploaded' ? 'processing' : 'uploading';
+    ? local.phase === 'error'
+      ? 'failed'
+      : busy
+        ? 'uploading'
+        : 'paused'
+    : status === 'failed' || status === 'quarantined'
+      ? 'failed'
+      : status === 'ready'
+        ? 'ready'
+        : status === 'processing' || status === 'uploaded'
+          ? 'processing'
+          : 'uploading';
 
-  const mapLabel = local
-    ? `${local.partsDone} of ${local.partCount} parts uploaded`
-    : `${partCount} of ${partCount} parts uploaded`;
+  const mapLabel = local ? `${local.partsDone} of ${local.partCount} parts uploaded` : `${partCount} of ${partCount} parts uploaded`;
 
   return (
     <li className="row">
@@ -43,11 +51,7 @@ export function FileRow({ local, file, action }: Props) {
 
       <PartMap states={local?.partStates} partCount={partCount} tone={tone} label={mapLabel} />
 
-      {local ? (
-        <LocalDetails local={local} busy={busy} onPick={() => picker.current?.click()} />
-      ) : (
-        <ServerDetails file={file!} action={action} />
-      )}
+      {local ? <LocalDetails local={local} busy={busy} onPick={() => picker.current?.click()} /> : <ServerDetails file={file!} action={action} />}
 
       {local?.phase === 'interrupted' && !local.canReopenFile ? (
         <input

@@ -3,6 +3,11 @@ name: Deploy to AWS (manual)
 # Disabled by default. It only runs when someone starts it by hand AND the repository
 # variable ENABLE_AWS_DEPLOY is "true". Authentication is GitHub OIDC: there are no
 # long-lived AWS keys in this repository. See "Deploy to real AWS" in the README.
+#
+# Two jobs. "plan" synthesizes the stack and shows `cdk diff` against what is deployed in the run summary.
+# "deploy" then waits for a reviewer to approve the `aws-deploy` environment and deploys that exact
+# synthesized plan, so what was reviewed is what ships. Changes that widen permissions (IAM, security
+# groups) also need the `approve_security_changes` box ticked when the run is started.
 on:
   workflow_dispatch:
     inputs:
@@ -44,6 +49,14 @@ on:
       alarm_email:
         description: Email address to subscribe to the alarm topic
         required: false
+      plan_only:
+        description: Only show what would change (cdk diff); do not deploy
+        type: boolean
+        default: false
+      approve_security_changes:
+        description: Allow the deploy to include changes that widen IAM permissions or network access. Read the diff in a plan_only run first.
+        type: boolean
+        default: false
 
 permissions:
   id-token: write # request the OIDC token
@@ -54,11 +67,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  plan:
+    name: Plan (cdk diff)
     if: ${{ vars.ENABLE_AWS_DEPLOY == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
     environment: aws
+    outputs:
+      security_changes: ${{ steps.diff.outputs.security_changes }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -73,7 +89,8 @@ jobs:
       - name: Build the web app
         if: ${{ inputs.deploy_web }}
         run: npm run build -w @s3up/web
-      - name: Deploy
+      - name: Synthesize and compare with what is deployed
+        id: diff
         working-directory: infra
         env:
           ALLOWED_ORIGINS: ${{ inputs.allowed_origins }}
@@ -87,6 +104,8 @@ jobs:
           MALWARE_SCAN: ${{ inputs.malware_scan }}
           CERTIFICATE_ARN: ${{ inputs.certificate_arn }}
           ALARM_EMAIL: ${{ inputs.alarm_email }}
+          PLAN_ONLY: ${{ inputs.plan_only }}
+          APPROVED: ${{ inputs.approve_security_changes }}
         run: |
           args=(
             -c deployApi=true
@@ -107,4 +126,95 @@ jobs:
           [ -n "${API_DOMAIN}" ] && args+=(-c "apiDomain=${API_DOMAIN}")
           [ -n "${CERTIFICATE_ARN}" ] && args+=(-c "certificateArn=${CERTIFICATE_ARN}")
           [ -n "${ALARM_EMAIL}" ] && args+=(-c "alarmEmail=${ALARM_EMAIL}")
-          npx cdk deploy UploadPipeline --require-approval never "${args[@]}"
+
+          # Synthesize once; the deploy job ships this exact assembly.
+          npx cdk synth UploadPipeline --quiet --output cdk.assembly "${args[@]}"
+
+          npx cdk diff UploadPipeline --app cdk.assembly --no-color > diff.txt 2>&1 || {
+            cat diff.txt
+            echo "::error::cdk diff failed"
+            exit 1
+          }
+          # With --fail the exit code is 1 when the diff widens permissions or network access. If this
+          # second run fails for any other reason it counts as widening, which is the safe direction.
+          if npx cdk diff UploadPipeline --app cdk.assembly --no-color --security-only --fail > security.txt 2>&1; then
+            security_changes=false
+          else
+            security_changes=true
+          fi
+          echo "security_changes=${security_changes}" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## cdk diff for UploadPipeline"
+            echo
+            if grep -q "Number of stacks with differences: 0" diff.txt; then echo "**No changes.**"; echo; fi
+            if [ "${security_changes}" = "true" ]; then
+              echo "**This deploy widens IAM permissions or network access.** To deploy it, read the diff below, then start the workflow again with approve_security_changes ticked."
+              echo
+            fi
+            echo '```diff'
+            head -c 400000 diff.txt
+            echo '```'
+            if [ "${security_changes}" = "true" ]; then
+              echo
+              echo "### Only the changes that widen permissions or network access"
+              echo '```diff'
+              head -c 200000 security.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Stop here rather than after a reviewer has been asked to approve a deploy that cannot go ahead.
+          if [ "${security_changes}" = "true" ] && [ "${PLAN_ONLY}" != "true" ] && [ "${APPROVED}" != "true" ]; then
+            echo "::error::This deploy widens IAM permissions or network access. Read the diff in the summary, then run again with approve_security_changes ticked (or use plan_only to just look)."
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cdk-assembly
+          path: infra/cdk.assembly/
+          retention-days: 3
+          include-hidden-files: true
+
+  deploy:
+    name: Deploy the reviewed plan
+    needs: plan
+    if: ${{ !inputs.plan_only }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Add required reviewers to this environment: they read the diff in the plan job's summary, then approve.
+    environment: aws-deploy
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: cdk-assembly
+          path: infra/cdk.assembly
+      - name: Deploy
+        working-directory: infra
+        env:
+          SECURITY_CHANGES: ${{ needs.plan.outputs.security_changes }}
+          APPROVED: ${{ inputs.approve_security_changes }}
+        run: |
+          flags=()
+          if [ "${SECURITY_CHANGES}" = "true" ]; then
+            if [ "${APPROVED}" != "true" ]; then
+              echo "::error::This deploy widens IAM permissions or network access (see the plan job's summary)."
+              echo "::error::Run it again with approve_security_changes ticked once you have read the diff."
+              exit 1
+            fi
+            # CDK cannot ask on a CI runner, so the acknowledgement made when the run was started stands in
+            # for its prompt. It applies to this one run only, and to the plan that was reviewed.
+            flags+=(--require-approval never)
+          fi
+          # Without the flag CDK's default (`broadening`) applies: it would stop on any widening it finds.
+          npx cdk deploy UploadPipeline --app cdk.assembly "${flags[@]}"

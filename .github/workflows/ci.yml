@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   check:
-    name: Typecheck, unit tests, build, cdk synth
+    name: Lint, typecheck, unit tests, build, cdk synth
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -25,6 +25,10 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Check formatting
+        run: npm run format:check
       - name: Typecheck
         run: npm run typecheck
       - name: Unit tests
@@ -39,7 +43,7 @@ jobs:
         run: npm run synth:full
 
   integration:
-    name: Integration tests (LocalStack)
+    name: Integration and browser tests (LocalStack)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -70,6 +74,19 @@ jobs:
         run: npm run localstack:deploy
       - name: Integration tests (generates and uploads a ~200 MB file)
         run: npm run test:integration
+      - name: Install the browser for the end-to-end tests
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end tests (browser, API and LocalStack)
+        run: npm run test:e2e
+      - name: Upload the Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
       - name: LocalStack logs
         if: failure()
         run: docker logs "${{ job.services.localstack.id }}" 2>&1 | tail -n 300

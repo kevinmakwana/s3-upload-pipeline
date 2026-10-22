@@ -244,11 +244,23 @@ export class UploadManager {
     const localId = crypto.randomUUID();
     const entry: Entry = {
       view: {
-        localId, fileName: file.name, contentType: contentTypeOf(file), size: file.size, lastModified: file.lastModified,
-        phase: 'idle', bytesUploaded: 0, partsDone: 0, partCount: 0, activeParts: 0, bytesPerSecond: 0,
-        partStates: new Uint8Array(0), canReopenFile: !!handle,
+        localId,
+        fileName: file.name,
+        contentType: contentTypeOf(file),
+        size: file.size,
+        lastModified: file.lastModified,
+        phase: 'idle',
+        bytesUploaded: 0,
+        partsDone: 0,
+        partCount: 0,
+        activeParts: 0,
+        bytesPerSecond: 0,
+        partStates: new Uint8Array(0),
+        canReopenFile: !!handle,
       },
-      file, handle, samples: [],
+      file,
+      handle,
+      samples: [],
     };
     this.entries.set(localId, entry);
     this.begin(localId, entry);
@@ -270,7 +282,8 @@ export class UploadManager {
     if (!persisted) return;
     let file = picked;
     if (!file && entry.handle) {
-      const ok = (await entry.handle.queryPermission?.({ mode: 'read' })) === 'granted' || (await entry.handle.requestPermission?.({ mode: 'read' })) === 'granted';
+      const ok =
+        (await entry.handle.queryPermission?.({ mode: 'read' })) === 'granted' || (await entry.handle.requestPermission?.({ mode: 'read' })) === 'granted';
       if (!ok) return this.fail(entry, 'Permission to read the file was not granted. Choose the file again.');
       file = await entry.handle.getFile();
     }
@@ -381,9 +394,20 @@ export class UploadManager {
     const states = new Uint8Array(p.partCount);
     for (const n of Object.keys(p.parts)) states[Number(n) - 1] = 2;
     return {
-      localId, fileId: p.fileId, fileName: p.fileName, contentType: p.contentType, size: p.fileSize, lastModified: p.lastModified,
-      phase: 'interrupted', bytesUploaded: doneBytes, partsDone: Object.keys(p.parts).length, partCount: p.partCount,
-      activeParts: 0, bytesPerSecond: 0, partStates: states, canReopenFile,
+      localId,
+      fileId: p.fileId,
+      fileName: p.fileName,
+      contentType: p.contentType,
+      size: p.fileSize,
+      lastModified: p.lastModified,
+      phase: 'interrupted',
+      bytesUploaded: doneBytes,
+      partsDone: Object.keys(p.parts).length,
+      partCount: p.partCount,
+      activeParts: 0,
+      bytesPerSecond: 0,
+      partStates: states,
+      canReopenFile,
     };
   }
 
@@ -393,7 +417,7 @@ export class UploadManager {
 
   private readConcurrency(): number {
     const stored = Number(this.deps.storage?.getItem(CONCURRENCY_KEY));
-    const n = stored >= 1 ? stored : this.deps.concurrency ?? 4;
+    const n = stored >= 1 ? stored : (this.deps.concurrency ?? 4);
     return Math.min(16, Math.max(1, Math.round(n)));
   }
 
@@ -429,8 +453,15 @@ function contentTypeOf(file: File): string {
   if (file.type) return file.type;
   const ext = file.name.split('.').pop()?.toLowerCase();
   const byExt: Record<string, string> = {
-    bin: 'application/octet-stream', dat: 'application/octet-stream', mp4: 'video/mp4', mov: 'video/quicktime',
-    zip: 'application/zip', gz: 'application/gzip', csv: 'text/csv', txt: 'text/plain', pdf: 'application/pdf',
+    bin: 'application/octet-stream',
+    dat: 'application/octet-stream',
+    mp4: 'video/mp4',
+    mov: 'video/quicktime',
+    zip: 'application/zip',
+    gz: 'application/gzip',
+    csv: 'text/csv',
+    txt: 'text/plain',
+    pdf: 'application/pdf',
   };
   return (ext && byExt[ext]) || 'application/octet-stream';
 }

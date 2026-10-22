@@ -48,7 +48,11 @@ describe('handleScanResult', () => {
     const outcome = await handleScanResult(event(rec.s3Key, 'THREATS_FOUND'), deps);
 
     expect(outcome).toEqual({ type: 'quarantined', fileId: rec.id });
-    expect(await files.get(rec.id)).toMatchObject({ status: 'quarantined', error: 'Malware found: Eicar-Test-Signature', updatedAt: '2026-02-01T00:00:00.000Z' });
+    expect(await files.get(rec.id)).toMatchObject({
+      status: 'quarantined',
+      error: 'Malware found: Eicar-Test-Signature',
+      updatedAt: '2026-02-01T00:00:00.000Z',
+    });
     expect((await files.get(rec.id))?.result).toBeUndefined();
     expect(deleted.sort()).toEqual([rec.s3Key, buildThumbnailKey('alice', rec.id)].sort());
   });
@@ -127,7 +131,10 @@ describe('handleScanResult', () => {
   it('copes with several or missing threat names, and keeps the reason short', async () => {
     const { files, deps } = setup();
     const a = await addFile(files);
-    await handleScanResult(event(a.s3Key, 'THREATS_FOUND', { scanResultDetails: { scanResultStatus: 'THREATS_FOUND', threats: [{ name: 'A' }, { name: 'B' }] } }), deps);
+    await handleScanResult(
+      event(a.s3Key, 'THREATS_FOUND', { scanResultDetails: { scanResultStatus: 'THREATS_FOUND', threats: [{ name: 'A' }, { name: 'B' }] } }),
+      deps,
+    );
     expect((await files.get(a.id))?.error).toBe('Malware found: A, B');
     const b = await addFile(files);
     await handleScanResult(event(b.s3Key, 'THREATS_FOUND', { scanResultDetails: { scanResultStatus: 'THREATS_FOUND', threats: null } }), deps);

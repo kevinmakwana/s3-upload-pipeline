@@ -43,19 +43,29 @@ export function App() {
       <header className="masthead">
         <div>
           <h1>Large file uploads</h1>
-          <p className="lede">
-            Files go straight from your browser to S3 in parallel parts. Close the tab halfway and pick up where you left off.
-          </p>
+          <p className="lede">Files go straight from your browser to S3 in parallel parts. Close the tab halfway and pick up where you left off.</p>
         </div>
         <div className="controls">
           <div className="stepper-control" role="group" aria-label="Parallel parts">
-            <button type="button" className="btn btn-icon" aria-label="Fewer parallel parts" onClick={() => manager.setConcurrency(concurrency - 1)} disabled={concurrency <= 1}>
+            <button
+              type="button"
+              className="btn btn-icon"
+              aria-label="Fewer parallel parts"
+              onClick={() => manager.setConcurrency(concurrency - 1)}
+              disabled={concurrency <= 1}
+            >
               −
             </button>
             <span className="stepper-value" title="Parts uploaded at the same time. Applies to the next upload or resume.">
               <b>{concurrency}</b> parallel parts
             </span>
-            <button type="button" className="btn btn-icon" aria-label="More parallel parts" onClick={() => manager.setConcurrency(concurrency + 1)} disabled={concurrency >= 16}>
+            <button
+              type="button"
+              className="btn btn-icon"
+              aria-label="More parallel parts"
+              onClick={() => manager.setConcurrency(concurrency + 1)}
+              disabled={concurrency >= 16}
+            >
               +
             </button>
           </div>

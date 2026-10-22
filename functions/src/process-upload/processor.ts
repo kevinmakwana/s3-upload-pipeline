@@ -41,10 +41,7 @@ export interface ObjectRef {
 }
 
 export type ProcessOutcome =
-  | { type: 'processed'; result: ProcessingResult }
-  | { type: 'rejected'; reason: string }
-  | { type: 'duplicate' }
-  | { type: 'ignored'; reason: string };
+  { type: 'processed'; result: ProcessingResult } | { type: 'rejected'; reason: string } | { type: 'duplicate' } | { type: 'ignored'; reason: string };
 
 /** Another invocation is working on this object right now; retry later. */
 export class ProcessingInProgressError extends Error {
@@ -65,7 +62,7 @@ export function idempotencyKey(ref: ObjectRef): string {
 export async function processObject(deps: ProcessorDeps, ref: ObjectRef, receiveCount = 1): Promise<ProcessOutcome> {
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => undefined);
-  const { files, ledger, storage, config } = deps;
+  const { files, ledger, config } = deps;
 
   const parsed = parseObjectKey(ref.key);
   if (!parsed) return { type: 'ignored', reason: 'key outside uploads layout' };

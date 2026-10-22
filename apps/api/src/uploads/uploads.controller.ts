@@ -27,12 +27,7 @@ export class UploadsController {
 
   @Post(':id/parts/:partNumber/presign')
   @HttpCode(200)
-  presign(
-    @CurrentUser() userId: string,
-    @Param('id') id: string,
-    @Param('partNumber', ParseIntPipe) partNumber: number,
-    @Body() body: unknown,
-  ) {
+  presign(@CurrentUser() userId: string, @Param('id') id: string, @Param('partNumber', ParseIntPipe) partNumber: number, @Body() body: unknown) {
     return this.uploads.presignPart(userId, id, partNumber, parse(presignSchema, body).sha256);
   }
 

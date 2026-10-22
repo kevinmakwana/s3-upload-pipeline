@@ -108,7 +108,7 @@ export class FilesService {
           if (!stopped) subscriber.error(err);
           return;
         }
-        if (!stopped) timer = setTimeout(tick, this.config.ssePollMs);
+        if (!stopped) timer = setTimeout(() => void tick(), this.config.ssePollMs);
       };
       void tick();
 

@@ -14,9 +14,7 @@ export class S3ObjectStorage implements ObjectStorage {
   }
 
   async readHead(key: string, versionId: string | undefined, length: number) {
-    const res = await this.s3.send(
-      new GetObjectCommand({ Bucket: this.bucket, Key: key, VersionId: versionId, Range: `bytes=0-${length - 1}` }),
-    );
+    const res = await this.s3.send(new GetObjectCommand({ Bucket: this.bucket, Key: key, VersionId: versionId, Range: `bytes=0-${length - 1}` }));
     return res.Body!.transformToByteArray();
   }
 

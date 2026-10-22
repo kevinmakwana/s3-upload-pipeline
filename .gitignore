@@ -13,3 +13,5 @@ coverage/
 tmp/
 .tmp/
 *.tsbuildinfo
+test-results/
+playwright-report/
