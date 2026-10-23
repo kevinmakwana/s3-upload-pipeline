@@ -76,7 +76,7 @@ jobs:
     outputs:
       security_changes: ${{ steps.diff.outputs.security_changes }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
@@ -185,7 +185,7 @@ jobs:
     # Add required reviewers to this environment: they read the diff in the plan job's summary, then approve.
     environment: aws-deploy
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v5
         with:
           node-version-file: .nvmrc
