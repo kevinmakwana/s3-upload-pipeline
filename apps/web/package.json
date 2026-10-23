@@ -14,8 +14,8 @@
     "@fontsource-variable/schibsted-grotesk": "^5.3.0",
     "@s3up/core": "*",
     "idb": "^8.0.4",
-    "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@types/react": "^19.3.0",
