@@ -1,6 +1,6 @@
 import { UnauthorizedException } from '@nestjs/common';
 import { isValidUserId } from '@s3up/core';
-import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, type JWK, type KeyLike } from 'jose';
+import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair, type CryptoKey, type JWK } from 'jose';
 import { HeaderAuthenticator, JwtAuthenticator, userIdFor } from './authenticator';
 
 const ISSUER = 'https://idp.example.com/';
@@ -12,7 +12,7 @@ async function setup() {
   const auth = new JwtAuthenticator(createLocalJWKSet({ keys: [jwk] }), { issuer: ISSUER, audience: AUDIENCE });
   const token = (
     claims: Record<string, unknown> = {},
-    opts: { exp?: number | string | null; iss?: string; aud?: string; key?: KeyLike | Uint8Array; alg?: string } = {},
+    opts: { exp?: number | string | null; iss?: string; aud?: string; key?: CryptoKey | Uint8Array; alg?: string } = {},
   ) => {
     let jwt = new SignJWT({ ...claims })
       .setProtectedHeader({ alg: opts.alg ?? 'RS256', kid: 'k1' })
