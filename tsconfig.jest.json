@@ -3,6 +3,7 @@
   "compilerOptions": {
     "module": "CommonJS",
     "moduleResolution": "Node10",
+    "ignoreDeprecations": "6.0",
     "experimentalDecorators": true,
     "lib": ["ES2023", "DOM"],
     "noEmit": false,
