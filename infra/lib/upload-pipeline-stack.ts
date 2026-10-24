@@ -67,6 +67,10 @@ export interface UploadPipelineProps extends StackProps {
 /** Longest the worker may run. Checksumming a 15 GB object streams at roughly 100-300 MB/s. */
 const WORKER_TIMEOUT = Duration.minutes(15);
 const MAX_RECEIVE_COUNT = 3;
+/** The embedded-metric namespace the worker publishes to (functions/src/process-upload/metrics.ts; a test keeps them equal). */
+export const WORKER_METRICS_NAMESPACE = 'S3Upload/Worker';
+/** An object that takes this share of the time limit is an early warning that bigger files will time out. */
+const WORKER_SLOW_SHARE = 0.8;
 const repoRoot = path.resolve(__dirname, '..', '..');
 
 export class UploadPipelineStack extends Stack {
@@ -197,6 +201,8 @@ export class UploadPipelineStack extends Stack {
       architecture: local && process.arch !== 'arm64' ? lambda.Architecture.X86_64 : lambda.Architecture.ARM_64,
       memorySize: 1536,
       timeout: WORKER_TIMEOUT,
+      // Traces show where an invocation spent its time (start-up, then the work) and tie to log lines by trace id.
+      tracing: lambda.Tracing.ACTIVE,
       logGroup: new logs.LogGroup(this, 'WorkerLogs', { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
       environment: {
         TABLE_NAME: table.tableName,
@@ -271,6 +277,69 @@ export class UploadPipelineStack extends Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     errorsAlarm.addAlarmAction(alarmAction);
+
+    // The worker publishes its own metrics (embedded in its logs). A run that hits the time limit is killed before it
+    // can report, so this alarm warns while the slowest object is still finishing, and `WorkerErrorsAlarm` catches the rest.
+    const workerMetric = (metricName: string, statistic: string, dimensionsMap?: Record<string, string>) =>
+      new cloudwatch.Metric({ namespace: WORKER_METRICS_NAMESPACE, metricName, statistic, period: Duration.minutes(5), dimensionsMap });
+    new cloudwatch.Alarm(this, 'WorkerSlowObjectAlarm', {
+      alarmDescription: `An object took over ${WORKER_SLOW_SHARE * 100}% of the worker's time limit. Bigger files will time out: move the worker to Fargate or Batch.`,
+      metric: workerMetric('ProcessingMs', 'Maximum'),
+      threshold: WORKER_TIMEOUT.toMilliseconds() * WORKER_SLOW_SHARE,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(alarmAction);
+
+    const dashboard = new cloudwatch.Dashboard(this, 'WorkerDashboard', { defaultInterval: Duration.hours(6) });
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Objects handled',
+        stacked: true,
+        width: 12,
+        left: (['processed', 'rejected', 'duplicate', 'error'] as const).map((outcome) =>
+          workerMetric('ObjectsHandled', 'Sum', { Outcome: outcome }).with({ label: outcome }),
+        ),
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Time per object (ms)',
+        width: 12,
+        left: [
+          workerMetric('ProcessingMs', 'p50').with({ label: 'median' }),
+          workerMetric('ProcessingMs', 'p99').with({ label: 'p99' }),
+          workerMetric('ProcessingMs', 'Maximum').with({ label: 'slowest' }),
+        ],
+        leftAnnotations: [{ label: 'Alarm', value: WORKER_TIMEOUT.toMilliseconds() * WORKER_SLOW_SHARE }],
+      }),
+    );
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Waiting in the queue',
+        width: 12,
+        left: [
+          workerMetric('QueueLatencyMs', 'p50').with({ label: 'median wait (ms)' }),
+          workerMetric('QueueLatencyMs', 'p99').with({ label: 'p99 wait (ms)' }),
+        ],
+        right: [queue.metricApproximateAgeOfOldestMessage({ period: Duration.minutes(5), statistic: 'Maximum', label: 'oldest message (s)' })],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Bytes checksummed',
+        width: 12,
+        left: [workerMetric('BytesProcessed', 'Sum').with({ label: 'bytes' })],
+      }),
+    );
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Lambda errors and throttles',
+        width: 12,
+        left: [worker.metricErrors({ period: Duration.minutes(5) }), worker.metricThrottles({ period: Duration.minutes(5) })],
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Dead-letter queue',
+        width: 12,
+        left: [dlq.metricApproximateNumberOfMessagesVisible({ period: Duration.minutes(1), statistic: 'Maximum', label: 'messages' })],
+      }),
+    );
 
     // --------------------------------------------------------- malware scanning
     if (props.malwareScan) {

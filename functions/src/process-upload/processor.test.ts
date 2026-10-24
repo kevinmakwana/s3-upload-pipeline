@@ -250,4 +250,64 @@ describe('handleBatch (SQS partial batch response)', () => {
     expect(res.batchItemFailures).toEqual([]);
     expect((await files.get(id))!.status).toBe('ready');
   });
+
+  describe('metrics', () => {
+    const NOW = 1_700_000_100_000;
+    const at = (deps: ProcessorDeps) => (deps.now = () => new Date(NOW));
+    const withSent = (m: SQSEvent['Records'][number], sentAgoMs: number) => {
+      m.attributes = { ...m.attributes, SentTimestamp: String(NOW - sentAgoMs) } as SQSEvent['Records'][number]['attributes'];
+      return m;
+    };
+    const lines = (out: string[]) => out.map((l) => JSON.parse(l) as Record<string, unknown>);
+
+    it('reports each processed object with its size and how long it waited in the queue', async () => {
+      const { deps, addFile } = setup();
+      at(deps);
+      const rec = await addFile(Buffer.from('twelve bytes'));
+      const out: string[] = [];
+      await handleBatch({ Records: [withSent(message('m1', s3Body(rec.s3Key)), 5_000)] }, deps, (l) => out.push(l));
+      expect(lines(out)).toEqual([
+        expect.objectContaining({ Outcome: 'processed', ObjectsHandled: 1, BytesProcessed: 12, QueueLatencyMs: 5_000, ProcessingMs: 0 }),
+      ]);
+    });
+
+    it('reports a redelivery as a duplicate and a bad file as rejected', async () => {
+      const { deps, addFile } = setup();
+      at(deps);
+      const good = await addFile(Buffer.from('abc'));
+      const wrongSize = await addFile(Buffer.from('abc'), { size: 99 });
+      const out: string[] = [];
+      const sink = (l: string) => out.push(l);
+      await handleBatch({ Records: [message('a', s3Body(good.s3Key))] }, deps, sink);
+      await handleBatch({ Records: [message('b', s3Body(good.s3Key), '2'), message('c', s3Body(wrongSize.s3Key))] }, deps, sink);
+      expect(lines(out).map((l) => l.Outcome)).toEqual(['processed', 'duplicate', 'rejected']);
+    });
+
+    it('reports a failure as an error and still asks for a retry', async () => {
+      const { deps, storage, addFile } = setup();
+      at(deps);
+      const rec = await addFile(Buffer.from('abc'));
+      storage.objects.delete(rec.s3Key);
+      const out: string[] = [];
+      const res = await handleBatch({ Records: [message('m', s3Body(rec.s3Key))] }, deps, (l) => out.push(l));
+      expect(res.batchItemFailures).toEqual([{ itemIdentifier: 'm' }]);
+      expect(lines(out)).toEqual([expect.objectContaining({ Outcome: 'error' })]);
+    });
+
+    it('measures the queue wait on the first attempt only, since later attempts include retry delays', async () => {
+      const { deps, addFile } = setup();
+      at(deps);
+      const rec = await addFile(Buffer.from('abc'));
+      const out: string[] = [];
+      await handleBatch({ Records: [withSent(message('m', s3Body(rec.s3Key), '2'), 90_000)] }, deps, (l) => out.push(l));
+      expect(lines(out)[0]).not.toHaveProperty('QueueLatencyMs');
+    });
+
+    it('says nothing about messages that carry no object', async () => {
+      const { deps } = setup();
+      const out: string[] = [];
+      await handleBatch({ Records: [message('t', JSON.stringify({ Event: 's3:TestEvent' }))] }, deps, (l) => out.push(l));
+      expect(out).toEqual([]);
+    });
+  });
 });
