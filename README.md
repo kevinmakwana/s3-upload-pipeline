@@ -330,6 +330,15 @@ The API writes one JSON object per line to stdout (the same shape as the worker'
 - **Request ids.** Every response carries `x-request-id` (readable from the browser app through CORS). A sensible incoming `x-request-id` is kept so a call can be followed across systems; anything else is replaced. To find what went wrong for a user, ask for the id from the failed response and search for it.
 - **Never logged:** query strings (they carry cursors), headers, tokens, request bodies and file names. Successful health checks and CORS preflights are not logged at all.
 
+### Monitoring the worker
+
+Besides the log lines, the worker publishes metrics and X-Ray traces, with no extra permissions beyond sending trace data.
+
+- **Metrics** go to the `S3Upload/Worker` namespace as [embedded metric format](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Embedded_Metric_Format_Specification.html) lines in the worker's log, so CloudWatch extracts them with no API call from the function. Each is published per `Outcome` (`processed`, `rejected`, `duplicate`, `ignored`, `error`) and as one total: `ObjectsHandled`, `ProcessingMs`, and, when known, `BytesProcessed` and `QueueLatencyMs` (how long the object waited in the queue before its first attempt).
+- **The `WorkerDashboard`** graphs objects handled by outcome, time per object (median, p99, slowest) against the alarm line, queue wait and age, bytes checksummed, Lambda errors and throttles, and the dead-letter queue.
+- **`WorkerSlowObjectAlarm`** fires when one object takes 80% of the 15-minute limit. A run that hits the limit is killed before it can report anything, so this is the early warning to move the worker to Fargate or Batch; `WorkerErrorsAlarm` still catches the timeouts themselves.
+- **Tracing** is on (active mode) for the worker. Each worker log line carries `traceId`, so a line in the logs leads to its trace and back. AWS SDK calls are not broken out as sub-segments; that would need the X-Ray SDK in the bundle.
+
 ## Design notes and limits
 
 - **Why SHA-256, not Content-MD5?** WebCrypto has no MD5, and S3 supports SHA-256 per part natively, reporting it back through `ListParts`. That also makes resume verification exact: the browser compares its own hash with S3's.
