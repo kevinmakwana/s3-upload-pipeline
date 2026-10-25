@@ -1,6 +1,8 @@
 import { Module, type DynamicModule, type ExecutionContext } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
+import { SNSClient } from '@aws-sdk/client-sns';
+import { SQSClient } from '@aws-sdk/client-sqs';
 import { createRemoteJWKSet } from 'jose';
 import { createDocClient, createS3Client, DynamoFileStore } from '@s3up/data';
 import { AuthGuard } from './auth/auth.guard';
@@ -8,10 +10,12 @@ import { HeaderAuthenticator, JwtAuthenticator } from './auth/authenticator';
 import { LoggingExceptionFilter } from './common/logging.filter';
 import { JsonLogger } from './common/logger';
 import { RetryAfterThrottlerGuard, callerKey } from './common/throttle';
-import { AUTHENTICATOR, CONFIG, FILES, LOGGER, S3, S3_PRESIGNER } from './common/tokens';
+import { AUTHENTICATOR, CHANGE_FEED, CONFIG, FILES, LOGGER, S3, S3_PRESIGNER } from './common/tokens';
 import type { AppConfig } from './config';
+import { PollingChangeFeed } from './files/change-feed';
 import { FilesController } from './files/files.controller';
 import { FilesService } from './files/files.service';
+import { SnsSqsChangeFeed } from './files/sns-sqs-change-feed';
 import { HealthController } from './health.controller';
 import { UploadsController } from './uploads/uploads.controller';
 import { UploadsService } from './uploads/uploads.service';
@@ -48,6 +52,19 @@ export class AppModule {
           useFactory: () => createS3Client(config.s3PublicEndpoint ? { endpoint: config.s3PublicEndpoint } : {}),
         },
         { provide: FILES, useFactory: () => new DynamoFileStore(createDocClient(), config.table) },
+        {
+          provide: CHANGE_FEED,
+          inject: [LOGGER],
+          useFactory: (logger: JsonLogger) => {
+            if (!config.changes) return new PollingChangeFeed(config.ssePollMs);
+            const region = process.env.AWS_REGION ?? 'us-east-1';
+            return new SnsSqsChangeFeed(new SQSClient({ region }), new SNSClient({ region }), {
+              ...config.changes,
+              fallbackPollMs: config.ssePollMs,
+              log: (level, message, fields) => logger.event(level, message, fields),
+            });
+          },
+        },
         {
           provide: AUTHENTICATOR,
           useFactory: () =>

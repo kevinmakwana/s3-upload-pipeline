@@ -8,7 +8,8 @@ const [outputsPath, envPath] = process.argv.slice(2);
 if (!outputsPath || !envPath) throw new Error('usage: write-env.ts <outputs.json> <env-file>');
 
 const outputs = Object.values(JSON.parse(readFileSync(outputsPath, 'utf8')) as Record<string, Record<string, string>>)[0];
-if (!outputs?.BucketName || !outputs.TableName) throw new Error(`Unexpected outputs in ${outputsPath}`);
+if (!outputs?.BucketName || !outputs.TableName || !outputs.ChangesTopicArn || !outputs.ChangesQueuePrefix)
+  throw new Error(`Unexpected outputs in ${outputsPath}`);
 
 const endpoint = process.env.LOCALSTACK_ENDPOINT ?? 'http://localhost:4566';
 const lines = [
@@ -20,6 +21,8 @@ const lines = [
   'AWS_REGION=us-east-1',
   'AWS_ACCESS_KEY_ID=test',
   'AWS_SECRET_ACCESS_KEY=test',
+  `CHANGES_TOPIC_ARN=${outputs.ChangesTopicArn}`,
+  `CHANGES_QUEUE_PREFIX=${outputs.ChangesQueuePrefix}`,
   'PORT=3001',
   'CORS_ORIGINS=http://localhost:5173',
   '',

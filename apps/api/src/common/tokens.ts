@@ -7,3 +7,5 @@ export const FILES = Symbol('FILES');
 export const AUTHENTICATOR = Symbol('AUTHENTICATOR');
 /** The JsonLogger every part of the API writes through. */
 export const LOGGER = Symbol('LOGGER');
+/** Tells the live file list when to look again (see files/change-feed.ts). */
+export const CHANGE_FEED = Symbol('CHANGE_FEED');

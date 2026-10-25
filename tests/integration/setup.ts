@@ -18,6 +18,8 @@ Object.assign(process.env, {
   AWS_SECRET_ACCESS_KEY: 'test',
   BUCKET_NAME: outputs.BucketName,
   TABLE_NAME: outputs.TableName,
+  // Stacks deployed before live updates have neither; the API then polls.
+  ...(outputs.ChangesTopicArn ? { CHANGES_TOPIC_ARN: outputs.ChangesTopicArn, CHANGES_QUEUE_PREFIX: outputs.ChangesQueuePrefix } : {}),
   QUEUE_URL: outputs.QueueUrl,
   DLQ_URL: outputs.DlqUrl,
 });

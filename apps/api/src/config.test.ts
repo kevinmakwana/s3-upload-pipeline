@@ -82,3 +82,27 @@ describe('log level', () => {
     expect(() => loadConfig({ ...base, LOG_LEVEL: 'verbose' })).toThrow(/LOG_LEVEL/);
   });
 });
+
+describe('change notifications configuration', () => {
+  const topic = 'arn:aws:sns:us-east-1:123456789012:UploadPipeline-FileChanges';
+
+  it('is off unless the stack provides a topic, so the live list polls', () => {
+    expect(loadConfig({ ...base }).changes).toBeUndefined();
+  });
+
+  it('needs the topic and the queue prefix together, and reads the safety interval', () => {
+    expect(loadConfig({ ...base, CHANGES_TOPIC_ARN: topic, CHANGES_QUEUE_PREFIX: 'UploadPipeline-sse' }).changes).toEqual({
+      topicArn: topic,
+      queuePrefix: 'UploadPipeline-sse',
+      safetyPollMs: 30_000,
+    });
+    expect(loadConfig({ ...base, CHANGES_TOPIC_ARN: topic, CHANGES_QUEUE_PREFIX: 'p', SSE_SAFETY_POLL_MS: '5000' }).changes?.safetyPollMs).toBe(5000);
+    expect(() => loadConfig({ ...base, CHANGES_TOPIC_ARN: topic })).toThrow(/CHANGES_QUEUE_PREFIX/);
+  });
+
+  it('refuses a topic that is not an SNS ARN, and a prefix SQS would reject', () => {
+    expect(() => loadConfig({ ...base, CHANGES_TOPIC_ARN: 'my-topic', CHANGES_QUEUE_PREFIX: 'p' })).toThrow(/SNS topic ARN/);
+    expect(() => loadConfig({ ...base, CHANGES_TOPIC_ARN: topic, CHANGES_QUEUE_PREFIX: 'has space' })).toThrow(/CHANGES_QUEUE_PREFIX/);
+    expect(() => loadConfig({ ...base, CHANGES_TOPIC_ARN: topic, CHANGES_QUEUE_PREFIX: 'x'.repeat(61) })).toThrow(/CHANGES_QUEUE_PREFIX/);
+  });
+});

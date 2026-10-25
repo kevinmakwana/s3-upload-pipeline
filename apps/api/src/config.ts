@@ -21,6 +21,14 @@ export interface RateLimits {
   initPerMinute: number;
 }
 
+export interface ChangesConfig {
+  topicArn: string;
+  /** Prefix of the per-task queues; the task's IAM permissions cover exactly these names. */
+  queuePrefix: string;
+  /** While push works, the live list still re-reads this often, so a lost message heals itself. */
+  safetyPollMs: number;
+}
+
 export interface AppConfig {
   port: number;
   auth: AuthConfig;
@@ -37,7 +45,13 @@ export interface AppConfig {
   downloadUrlExpiresSeconds: number;
   /** How long an unfinished upload record lingers before DynamoDB TTL removes it. */
   pendingTtlSeconds: number;
+  /** How often the live file list reads the table when nothing pushes changes to it. */
   ssePollMs: number;
+  /**
+   * Push notifications of file changes (DynamoDB Streams -> SNS -> one SQS queue per API task). Set by the stack;
+   * without it the live list polls every `ssePollMs`.
+   */
+  changes?: ChangesConfig;
   /** Lowest level written to the log; `silent` writes nothing. */
   logLevel: LogLevelSetting;
   quotas: Quotas;
@@ -88,6 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     downloadUrlExpiresSeconds: Math.min(3600, Math.max(60, int(env.DOWNLOAD_URL_EXPIRES_SECONDS, 300))),
     pendingTtlSeconds: int(env.PENDING_TTL_SECONDS, 3 * 24 * 3600),
     ssePollMs: int(env.SSE_POLL_MS, 1000),
+    changes: loadChanges(env, whole),
     logLevel: loadLogLevel(env.LOG_LEVEL),
     quotas: {
       maxActiveUploads: whole('MAX_ACTIVE_UPLOADS_PER_USER', 10, 0),
@@ -101,6 +116,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     trustProxyHops: whole('TRUST_PROXY_HOPS', 0, 0),
     malwareScan: env.MALWARE_SCAN === 'true',
   };
+}
+
+function loadChanges(env: NodeJS.ProcessEnv, whole: (name: string, fallback: number, min: number) => number): ChangesConfig | undefined {
+  const topicArn = env.CHANGES_TOPIC_ARN;
+  if (!topicArn) return undefined;
+  if (!/^arn:[a-z-]+:sns:[a-z0-9-]+:\d{12}:[\w-]+$/.test(topicArn)) throw new Error(`CHANGES_TOPIC_ARN is not an SNS topic ARN: "${topicArn}"`);
+  const queuePrefix = env.CHANGES_QUEUE_PREFIX;
+  // SQS queue names allow letters, digits, hyphens and underscores, up to 80 characters; ours add 20 more.
+  if (!queuePrefix || !/^[\w-]{1,60}$/.test(queuePrefix))
+    throw new Error('CHANGES_QUEUE_PREFIX is required with CHANGES_TOPIC_ARN: up to 60 letters, digits, hyphens or underscores');
+  return { topicArn, queuePrefix, safetyPollMs: whole('SSE_SAFETY_POLL_MS', 30_000, 1000) };
 }
 
 /**

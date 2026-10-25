@@ -13,7 +13,7 @@ import * as ecsPatterns from 'aws-cdk-lib/aws-ecs-patterns';
 import * as elbv2 from 'aws-cdk-lib/aws-elasticloadbalancingv2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
+import { DynamoEventSource, SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as acm from 'aws-cdk-lib/aws-certificatemanager';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -142,6 +142,8 @@ export class UploadPipelineStack extends Stack {
       partitionKey: { name: 'pk', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       timeToLiveAttribute: 'expiresAt',
+      // Every change to a file record is announced to the API tasks (see "change notifications" below).
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
       removalPolicy: removal,
       ...(local ? {} : { pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true } }),
     });
@@ -341,6 +343,49 @@ export class UploadPipelineStack extends Stack {
       }),
     );
 
+    // ---------------------------------------------------- change notifications
+    // The live file list used to poll DynamoDB once a second for every open connection. Instead, a change to a file
+    // record reaches the stream, a small function names the owner on an SNS topic, and each API task (which owns an
+    // SQS queue subscribed to the topic) re-reads only that user's list. Open connections cost nothing while idle.
+    const changesTopic = new sns.Topic(this, 'FileChangesTopic', { enforceSSL: true });
+    // Everything a task creates is named with this prefix, which is all its permissions cover.
+    const changeQueuePrefix = `${this.stackName.slice(0, 56)}-sse`;
+    const changesForwarder = new NodejsFunction(this, 'FileChangesFn', {
+      entry: path.join(repoRoot, 'functions', 'src', 'file-changes', 'handler.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: local && process.arch !== 'arm64' ? lambda.Architecture.X86_64 : lambda.Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.seconds(30),
+      tracing: lambda.Tracing.ACTIVE,
+      logGroup: new logs.LogGroup(this, 'FileChangesLogs', { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
+      environment: { TOPIC_ARN: changesTopic.topicArn },
+      bundling: { minify: true, sourceMap: true, target: 'node22', externalModules: ['@aws-sdk/*'] },
+    });
+    changesTopic.grantPublish(changesForwarder);
+    changesForwarder.addEventSource(
+      new DynamoEventSource(table, {
+        // Only changes from now on matter: a connection reads the current list itself when it opens.
+        startingPosition: lambda.StartingPosition.LATEST,
+        batchSize: 100,
+        maxBatchingWindow: Duration.seconds(1),
+        bisectBatchOnError: true,
+        // A notification is stale within a minute or two, and the API re-reads on a timer anyway, so do not
+        // hold up the stream retrying one.
+        retryAttempts: 2,
+        maxRecordAge: Duration.minutes(2),
+        // The processing ledger shares this table and changes constantly; it is not a file.
+        filters: [lambda.FilterCriteria.filter({ dynamodb: { Keys: { pk: { S: lambda.FilterRule.beginsWith('FILE#') } } } })],
+      }),
+    );
+    new cloudwatch.Alarm(this, 'FileChangesErrorsAlarm', {
+      alarmDescription: 'Live updates are not reaching the API. The file list still refreshes on a timer, only more slowly.',
+      metric: changesForwarder.metricErrors({ period: Duration.minutes(5) }),
+      threshold: 3,
+      evaluationPeriods: 1,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    }).addAlarmAction(alarmAction);
+
     // --------------------------------------------------------- malware scanning
     if (props.malwareScan) {
       this.addMalwareScanning({ bucket, bucketName, table, alarmTopic, alarmAction });
@@ -393,6 +438,23 @@ export class UploadPipelineStack extends Stack {
           actions: ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:Query'],
           resources: [table.tableArn, `${table.tableArn}/index/byUser`],
         }),
+        // Each task keeps one queue, subscribed to the changes topic, to hear when files change.
+        new iam.PolicyStatement({
+          sid: 'ChangeFeedQueues',
+          actions: ['sqs:CreateQueue', 'sqs:DeleteQueue', 'sqs:GetQueueUrl', 'sqs:SetQueueAttributes', 'sqs:ReceiveMessage', 'sqs:DeleteMessage'],
+          resources: [`arn:${this.partition}:sqs:${this.region}:${this.account}:${changeQueuePrefix}-*`],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ChangeFeedSubscribe',
+          actions: ['sns:Subscribe', 'sns:ListSubscriptionsByTopic'],
+          resources: [changesTopic.topicArn],
+        }),
+        new iam.PolicyStatement({
+          sid: 'ChangeFeedUnsubscribe',
+          actions: ['sns:Unsubscribe'],
+          // A subscription's ARN is the topic's ARN plus an id.
+          resources: [`${changesTopic.topicArn}:*`],
+        }),
       ],
     });
 
@@ -441,6 +503,8 @@ export class UploadPipelineStack extends Stack {
             // The ALB is the one proxy in front of the API: trust its X-Forwarded-For, and no more,
             // so per-address rate limits see real client addresses that clients cannot forge.
             TRUST_PROXY_HOPS: '1',
+            CHANGES_TOPIC_ARN: changesTopic.topicArn,
+            CHANGES_QUEUE_PREFIX: changeQueuePrefix,
             ...(props.malwareScan ? { MALWARE_SCAN: 'true' } : {}),
             ...authEnvironment,
           },
@@ -471,6 +535,8 @@ export class UploadPipelineStack extends Stack {
     new CfnOutput(this, 'WorkerFunctionName', { value: worker.functionName });
     new CfnOutput(this, 'ApiPolicyArn', { value: apiPolicy.managedPolicyArn });
     new CfnOutput(this, 'AlarmTopicArn', { value: alarmTopic.topicArn });
+    new CfnOutput(this, 'ChangesTopicArn', { value: changesTopic.topicArn });
+    new CfnOutput(this, 'ChangesQueuePrefix', { value: changeQueuePrefix });
   }
 
   /**
