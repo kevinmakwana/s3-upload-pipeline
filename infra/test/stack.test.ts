@@ -85,6 +85,8 @@ function findCycle(template: { Resources: Record<string, Record<string, unknown>
 }
 
 const XRAY_WRITES = ['xray:PutTelemetryRecords', 'xray:PutTraceSegments'];
+/** CDK grants a stream reader ListStreams on "*". It lists stream ARNs and reads no data; the reads are scoped to this table's stream. */
+const LIST_STREAMS = ['dynamodb:ListStreams'];
 
 describe('UploadPipelineStack', () => {
   const t = synth();
@@ -264,6 +266,87 @@ describe('UploadPipelineStack', () => {
     });
   });
 
+  describe('live file updates (change notifications)', () => {
+    const policyStatements = (template: Template) =>
+      Object.values(template.findResources('AWS::IAM::ManagedPolicy', {}))
+        .concat(Object.values(template.findResources('AWS::IAM::Policy', {})))
+        .flatMap((p) => (p as { Properties: { PolicyDocument: { Statement: Record<string, unknown>[] } } }).Properties.PolicyDocument.Statement);
+    const sid = (template: Template, name: string) => policyStatements(template).find((s) => s.Sid === name)!;
+
+    it('streams every change to a file record, old and new, so a deleted file still names its owner', () => {
+      t.hasResourceProperties('AWS::DynamoDB::Table', { StreamSpecification: { StreamViewType: 'NEW_AND_OLD_IMAGES' } });
+    });
+
+    it('forwards stream records from now on, in small waits, skipping the processing ledger and anything stale', () => {
+      t.hasResourceProperties('AWS::Lambda::EventSourceMapping', {
+        StartingPosition: 'LATEST',
+        BatchSize: 100,
+        MaximumBatchingWindowInSeconds: 1,
+        BisectBatchOnFunctionError: true,
+        MaximumRetryAttempts: 2,
+        MaximumRecordAgeInSeconds: 120,
+        FilterCriteria: { Filters: [{ Pattern: JSON.stringify({ dynamodb: { Keys: { pk: { S: [{ prefix: 'FILE#' }] } } } }) }] },
+      });
+    });
+
+    it('lets the forwarder publish to the changes topic and nothing else on SNS', () => {
+      // Role policies only: the API's permissions (a managed policy) are checked separately below.
+      const roleStatements = Object.values(t.findResources('AWS::IAM::Policy', {})).flatMap(
+        (p) => (p as { Properties: { PolicyDocument: { Statement: Record<string, unknown>[] } } }).Properties.PolicyDocument.Statement,
+      );
+      const sns = roleStatements.filter((s) => [s.Action].flat().some((a) => String(a).startsWith('sns:')));
+      expect(sns.length).toBeGreaterThan(0);
+      for (const s of sns) expect([s.Action].flat().sort()).toEqual(['sns:Publish']);
+    });
+
+    it('makes the topic refuse unencrypted connections, and traces and alarms on the forwarder', () => {
+      t.hasResourceProperties('AWS::SNS::TopicPolicy', {
+        PolicyDocument: { Statement: Match.arrayWith([Match.objectLike({ Effect: 'Deny', Condition: { Bool: { 'aws:SecureTransport': 'false' } } })]) },
+      });
+      t.hasResourceProperties('AWS::Lambda::Function', { Environment: { Variables: { TOPIC_ARN: Match.anyValue() } }, TracingConfig: { Mode: 'Active' } });
+      t.hasResourceProperties('AWS::CloudWatch::Alarm', {
+        MetricName: 'Errors',
+        Threshold: 3,
+        AlarmActions: [Match.anyValue()],
+        Dimensions: [{ Name: 'FunctionName', Value: Match.anyValue() }],
+      });
+    });
+
+    it('tells the API where the topic is and what to call its queues, only when the API is deployed', () => {
+      const env = apiEnvironment(synth({ deployApi: true }));
+      expect(env.CHANGES_TOPIC_ARN).toBeDefined();
+      expect(String(env.CHANGES_QUEUE_PREFIX)).toMatch(/^[\w-]{1,60}$/);
+      t.hasOutput('ChangesTopicArn', Match.anyValue());
+      t.hasOutput('ChangesQueuePrefix', Match.anyValue());
+    });
+
+    it("gives the API's tasks their own queues under the prefix, one subscription each, and no way into anyone else's", () => {
+      const withApi = synth({ deployApi: true });
+      const queues = sid(withApi, 'ChangeFeedQueues');
+      expect([queues.Action].flat().sort()).toEqual([
+        'sqs:CreateQueue',
+        'sqs:DeleteMessage',
+        'sqs:DeleteQueue',
+        'sqs:GetQueueUrl',
+        'sqs:ReceiveMessage',
+        'sqs:SetQueueAttributes',
+      ]);
+      expect(JSON.stringify(queues.Resource)).toMatch(/:sqs:.*-sse-\*/);
+      expect(JSON.stringify(queues.Resource)).not.toBe('"*"');
+
+      expect([sid(withApi, 'ChangeFeedSubscribe').Action].flat().sort()).toEqual(['sns:ListSubscriptionsByTopic', 'sns:Subscribe']);
+      const unsubscribe = sid(withApi, 'ChangeFeedUnsubscribe');
+      expect([unsubscribe.Action].flat()).toEqual(['sns:Unsubscribe']);
+      expect(JSON.stringify(unsubscribe.Resource)).toContain(':*'); // a subscription ARN: the topic's plus an id
+    });
+
+    it('names queues in the policy exactly as the API is told to name them', () => {
+      const withApi = synth({ deployApi: true });
+      const prefix = String(apiEnvironment(withApi).CHANGES_QUEUE_PREFIX);
+      expect(JSON.stringify(sid(withApi, 'ChangeFeedQueues').Resource)).toContain(`${prefix}-*`);
+    });
+  });
+
   it('alarms on the DLQ and notifies SNS', () => {
     t.hasResourceProperties('AWS::CloudWatch::Alarm', {
       MetricName: 'ApproximateNumberOfMessagesVisible',
@@ -300,8 +383,8 @@ describe('UploadPipelineStack', () => {
         if (s.Effect !== 'Allow') continue;
         for (const a of actionsOf(s)) expect(a).not.toMatch(/\*$/);
         // Log delivery and SQS consume permissions are generated by CDK against specific ARNs. X-Ray's write actions
-        // are the one exception: AWS does not support resource-level permissions for them, so "*" is the only form.
-        if (actionsOf(s).every((a) => XRAY_WRITES.includes(a))) continue;
+        // are an exception: AWS does not support resource-level permissions for them, so "*" is the only form.
+        if (actionsOf(s).every((a) => XRAY_WRITES.includes(a)) || actionsOf(s).every((a) => LIST_STREAMS.includes(a))) continue;
         expect(JSON.stringify(s.Resource)).not.toBe('"*"');
       }
     });
@@ -646,7 +729,7 @@ describe('UploadPipelineStack', () => {
 
   describe('API monitoring and scaling', () => {
     it('has no API alarms or scaling when the API is not deployed', () => {
-      t.resourceCountIs('AWS::CloudWatch::Alarm', 4); // DLQ, backlog, worker errors, slow object
+      t.resourceCountIs('AWS::CloudWatch::Alarm', 5); // DLQ, backlog, worker errors, slow object, file changes
       t.resourceCountIs('AWS::ApplicationAutoScaling::ScalableTarget', 0);
     });
 
@@ -664,7 +747,7 @@ describe('UploadPipelineStack', () => {
       ]) {
         expect({ metric, alarms: byMetric(metric).length }).toEqual({ metric, alarms: 1 });
       }
-      withApi.resourceCountIs('AWS::CloudWatch::Alarm', 4 + 6);
+      withApi.resourceCountIs('AWS::CloudWatch::Alarm', 5 + 6);
       for (const alarm of alarms) expect(alarm.AlarmActions).toHaveLength(1);
       // Quiet periods are not outages: missing data must not page anyone.
       for (const alarm of alarms) expect(alarm.TreatMissingData).toBe('notBreaching');

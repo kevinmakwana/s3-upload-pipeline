@@ -35,6 +35,8 @@ flowchart LR
   DLQ[["Dead-letter queue"]]
   L["Lambda worker<br/>checksum · sniff · thumbnail"]
   DDB[("DynamoDB<br/>files + idempotency ledger")]
+  FWD["Lambda forwarder<br/>stream → topic"]
+  TOPIC(["SNS topic<br/>file changes"])
   ALARM["CloudWatch alarm → SNS"]
 
   UI -- "1. init, presign, complete" --> API
@@ -48,6 +50,7 @@ flowchart LR
   SQS -. "after 3 failed receives" .-> DLQ -.-> ALARM
   L --> S3
   L --> DDB
+  DDB -. "stream" .-> FWD --> TOPIC -. "one SQS queue per API task" .-> API
 ```
 
 ### Upload and resume
@@ -160,6 +163,9 @@ Environment variables for the API (the quick start writes `.env.local` for you; 
 | `RATE_LIMIT_IP_PER_MINUTE` | 1200 | Requests per client address, counted before authentication |
 | `RATE_LIMIT_USER_PER_MINUTE` | 1500 | Requests per credential (bearer token or demo user id). Presigning one URL per part is most of this |
 | `RATE_LIMIT_INIT_PER_MINUTE` | 30 | Uploads one credential may start per minute |
+| `CHANGES_TOPIC_ARN`, `CHANGES_QUEUE_PREFIX` | unset | Push live file updates (see [Live updates](#live-updates)). The stack sets both; without them the live list polls |
+| `SSE_POLL_MS` | 1000 | How often the live list reads the table when nothing pushes changes to it |
+| `SSE_SAFETY_POLL_MS` | 30000 | With push on, how often a connection re-reads anyway, so a lost notification heals itself |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` or `silent` |
 | `TRUST_PROXY_HOPS` | 0 | Proxies in front of the API whose `X-Forwarded-For` to trust. The AWS stack sets `1` for its load balancer |
 | `MALWARE_SCAN` | unset | `true` when the stack scans uploads: downloads then wait for a clean GuardDuty verdict. The stack sets it; leave it off for LocalStack |
@@ -330,6 +336,18 @@ The API writes one JSON object per line to stdout (the same shape as the worker'
 - **Request ids.** Every response carries `x-request-id` (readable from the browser app through CORS). A sensible incoming `x-request-id` is kept so a call can be followed across systems; anything else is replaced. To find what went wrong for a user, ask for the id from the failed response and search for it.
 - **Never logged:** query strings (they carry cursors), headers, tokens, request bodies and file names. Successful health checks and CORS preflights are not logged at all.
 
+### Live updates
+
+`GET /files/stream` keeps the file list current without the browser asking. A connection reads the list when it opens, and again only when told something changed; an event goes out only if the page differs from the last one sent, so a wake-up that changes nothing costs one read.
+
+- **What wakes it.** Every change to a file record reaches the table's DynamoDB stream. A small forwarder Lambda names the owner on an SNS topic (`{ "userId": ... }`, never file details). Each API task owns one SQS queue subscribed to that topic and wakes the connections of whichever users the messages name. Idle connections therefore cost nothing; before, each cost a read a second.
+- **Why a queue per task, not the stream.** A stream shard supports about two readers, and the service runs one to four tasks. The topic fans one stream out to any number of tasks.
+- **It cannot show wrong data.** A notification carries only a user id, so a late, repeated or lost one never changes what a client sees. A connection also re-reads every `SSE_SAFETY_POLL_MS`, which covers a lost one.
+- **It cannot take the API down.** If the queue cannot be created or subscribed, the API logs why and the live list falls back to polling every `SSE_POLL_MS` until it recovers. If the queue is deleted underneath a task, it registers a new one.
+- **Housekeeping.** A task removes its queue and subscription when it shuts down cleanly. One that is killed leaves them behind; the next task to start removes any older than seven days. Each task's permissions cover only queues named `<stack>-sse-*`, the topic's subscriptions and nothing else.
+- **`FileChangesErrorsAlarm`** fires when the forwarder keeps failing. Live updates then slow to the safety interval; nothing is lost.
+- **LocalStack.** Adding the stream to a table LocalStack already created is not handled by its CloudFormation, so after upgrading run `npm run localstack:down`, then up and deploy again.
+
 ### Monitoring the worker
 
 Besides the log lines, the worker publishes metrics and X-Ray traces, with no extra permissions beyond sending trace data.
@@ -345,16 +363,16 @@ Besides the log lines, the worker publishes metrics and X-Ray traces, with no ex
 - **Why no custom resource for notifications?** CDK's default S3-to-SQS wiring uses a helper Lambda that LocalStack does not run. The stack sets the bucket's notification configuration directly, which needs a fixed bucket name to break a circular reference with the queue policy. The result deploys identically to LocalStack and AWS.
 - **Worker time limit.** Lambda stops at 15 minutes, and checksumming streams the whole object. At 100 to 250 MB/s that comfortably covers tens of gigabytes; for much larger files move the worker to Fargate or Batch.
 - **Thumbnails** use pure-JS Jimp (no native binaries to bundle), so they cover PNG, JPEG and GIF up to 25 MB. Larger or other images are still checksummed, with the reason recorded.
-- **SSE polls DynamoDB** once a second per connection, for the newest page only. At scale you would fan out from a DynamoDB Stream instead. The web app merges each pushed page into the older pages the user has loaded with *Load older files*.
+- **Live updates are pushed, with a timer as the safety net.** See [Live updates](#live-updates). Only the newest page is pushed; the web app merges each pushed page into the older pages the user has loaded with *Load older files*. Without the stack's topic (a bare `npm run dev` against your own table, say) the API polls DynamoDB instead.
 - **Resume UX differs by browser.** Persisting a file handle needs the File System Access API (Chromium). Elsewhere the upload session is still saved and you re-select the same file; the name and size must match.
 - **Max file size** defaults to 20 GiB; S3 itself allows 5 TiB, so raise it deliberately.
 
 ## Repository layout
 
 ```
-apps/api         NestJS API: presign, ListParts, verified completion, SSE
+apps/api         NestJS API: presign, ListParts, verified completion, live updates (SSE)
 apps/web         React + Vite UI: part map, lifecycle, IndexedDB resume
-functions/       Lambda worker (SQS → checksum, sniff, thumbnail, status)
+functions/       Lambda worker (SQS → checksum, sniff, thumbnail, status) and the change forwarder (stream → SNS)
 infra/           AWS CDK app (TypeScript)
 packages/core    Part planning, validation, reconciliation, the upload engine
 packages/data    DynamoDB file store and idempotency ledger (+ in-memory twin)

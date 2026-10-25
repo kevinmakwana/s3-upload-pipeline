@@ -3,9 +3,10 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { DEFAULT_PAGE_SIZE, buildThumbnailKey, type DownloadUrlResponse, type FileDto, type FilePage } from '@s3up/core';
 import { InvalidCursorError, deleteAllVersions, toDto, type FileRecord, type FileStore, type RecordPage } from '@s3up/data';
-import { Observable, interval } from 'rxjs';
+import { filter, interval, map, merge, of, switchMap, type Observable } from 'rxjs';
 import type { AppConfig } from '../config';
-import { CONFIG, FILES, S3, S3_PRESIGNER } from '../common/tokens';
+import { CHANGE_FEED, CONFIG, FILES, S3, S3_PRESIGNER } from '../common/tokens';
+import type { ChangeFeed } from './change-feed';
 import { attachmentDisposition } from './content-disposition';
 
 /** The object tag GuardDuty Malware Protection for S3 writes its verdict to. */
@@ -18,6 +19,7 @@ export class FilesService {
     @Inject(S3) private readonly s3: S3Client,
     @Inject(S3_PRESIGNER) private readonly presigner: S3Client,
     @Inject(FILES) private readonly files: FileStore,
+    @Inject(CHANGE_FEED) private readonly feed: ChangeFeed,
   ) {}
 
   /** One page of the caller's files, newest first. Aborted uploads are bookkeeping, not shown. */
@@ -86,39 +88,34 @@ export class FilesService {
   /**
    * Server-sent events: a `files` event with the newest page (and the cursor for the rest)
    * whenever anything on it changes, plus a periodic `ping` so proxies keep the connection open.
-   * Older pages are not pushed; clients fetch them with GET /files?cursor=. State is polled from
-   * DynamoDB per connection; at larger scale you would fan out from a DynamoDB Stream instead.
+   * Older pages are not pushed; clients fetch them with GET /files?cursor=.
+   *
+   * The list is read once when the connection opens and again whenever the change feed says something may have
+   * changed; an event goes out only if the page differs from the one last sent. The feed is a push from DynamoDB
+   * Streams when the stack provides one, and a timer otherwise (see change-feed.ts).
    */
   stream(userId: string): Observable<{ type: string; data: FilePage | object }> {
-    return new Observable((subscriber) => {
-      let last = '';
-      let stopped = false;
-      let timer: NodeJS.Timeout | undefined;
-
-      const tick = async () => {
-        try {
-          const page = await this.page(userId, DEFAULT_PAGE_SIZE);
-          const signature = page.items.map((r) => `${r.id}:${r.status}:${r.updatedAt}`).join('|') + (page.nextCursor ? '+' : '');
-          if (signature !== last && !stopped) {
-            last = signature;
-            const data: FilePage = { files: await this.toDtos(page.items), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
-            subscriber.next({ type: 'files', data });
-          }
-        } catch (err) {
-          if (!stopped) subscriber.error(err);
-          return;
-        }
-        if (!stopped) timer = setTimeout(() => void tick(), this.config.ssePollMs);
-      };
-      void tick();
-
-      const heartbeat = interval(15_000).subscribe(() => subscriber.next({ type: 'ping', data: {} }));
-      return () => {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-        heartbeat.unsubscribe();
-      };
-    });
+    // Undefined until the first page goes out, so a user with no files still hears from the server on connecting.
+    let sent: string | undefined;
+    const pages = merge(of(undefined), this.feed.changes(userId)).pipe(
+      // A newer signal abandons a read still in flight, so the last read always starts after the last signal.
+      switchMap(async () => {
+        const page = await this.page(userId, DEFAULT_PAGE_SIZE);
+        const signature = page.items.map((r) => `${r.id}:${r.status}:${r.updatedAt}`).join('|') + (page.nextCursor ? '+' : '');
+        if (signature === sent) return undefined; // nothing new: skip building the links
+        const data: FilePage = { files: await this.toDtos(page.items), ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}) };
+        return { signature, event: { type: 'files', data } };
+      }),
+      // Remember a page only once it is about to go out, so an abandoned read can never hide a change.
+      filter((read): read is NonNullable<typeof read> => {
+        if (!read || read.signature === sent) return false;
+        sent = read.signature;
+        return true;
+      }),
+      map(({ event }) => event),
+    );
+    const pings = interval(15_000).pipe(map(() => ({ type: 'ping', data: {} })));
+    return merge(pages, pings);
   }
 
   private async owned(userId: string, fileId: string, { includeAborted = false } = {}): Promise<FileRecord> {

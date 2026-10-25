@@ -25,5 +25,7 @@ for (const name of ['BucketName', 'TableName']) {
 Object.assign(process.env, {
   BUCKET_NAME: outputs.BucketName,
   TABLE_NAME: outputs.TableName,
+  // Stacks deployed before live updates have neither; the API then polls.
+  ...(outputs.ChangesTopicArn ? { CHANGES_TOPIC_ARN: outputs.ChangesTopicArn, CHANGES_QUEUE_PREFIX: outputs.ChangesQueuePrefix } : {}),
   API_POLICY_ARN: outputs.ApiPolicyArn ?? '',
 });
