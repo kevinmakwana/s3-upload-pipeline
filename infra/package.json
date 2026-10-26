@@ -13,11 +13,11 @@
     "synth:full": "cdk synth --quiet -c deployApi=true -c cognito=true -c deployWeb=true -c malwareScan=true -c largeObjectWorker=true -c apiDomain=api.example.com -c certificateArn=arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
   },
   "dependencies": {
-    "aws-cdk-lib": "^2.273.0",
+    "aws-cdk-lib": "^2.274.0",
     "constructs": "^10.8.1"
   },
   "devDependencies": {
-    "aws-cdk": "^2.1145.0",
-    "aws-cdk-local": "^3.0.4"
+    "aws-cdk": "^2.1146.1",
+    "aws-cdk-local": "^3.1.0"
   }
 }
