@@ -1,8 +1,8 @@
 import * as path from 'node:path';
 import { App } from 'aws-cdk-lib';
 import { Match, Template } from 'aws-cdk-lib/assertions';
-import { METRICS_NAMESPACE } from '../../functions/src/process-upload/metrics';
-import { UploadPipelineStack, WORKER_METRICS_NAMESPACE } from '../lib/upload-pipeline-stack';
+import { LARGE_METRICS_NAMESPACE as WORKER_LARGE_NAMESPACE, METRICS_NAMESPACE } from '../../functions/src/process-upload/metrics';
+import { LARGE_METRICS_NAMESPACE, UploadPipelineStack, WORKER_METRICS_NAMESPACE } from '../lib/upload-pipeline-stack';
 import { contentSecurityPolicy, webRuntimeConfig } from '../lib/web-hosting';
 
 const JWT_AUTH = { mode: 'jwt', issuer: 'https://idp.example.com/', audience: 'upload-api', jwksUrl: 'https://idp.example.com/.well-known/jwks.json' } as const;
@@ -94,6 +94,8 @@ describe('UploadPipelineStack', () => {
   it.each([
     ['AWS', {}],
     ['AWS with the API', { deployApi: true }],
+    ['AWS with the large-object worker', { largeObjects: {} }],
+    ['AWS with the API and the large-object worker', { deployApi: true, largeObjects: {} }],
     ['LocalStack', { local: true }],
   ])('has no resource dependency cycle (%s)', (_name, props) => {
     const template = synth(props as never).toJSON();
@@ -344,6 +346,126 @@ describe('UploadPipelineStack', () => {
       const withApi = synth({ deployApi: true });
       const prefix = String(apiEnvironment(withApi).CHANGES_QUEUE_PREFIX);
       expect(JSON.stringify(sid(withApi, 'ChangeFeedQueues').Resource)).toContain(`${prefix}-*`);
+    });
+  });
+
+  describe('large-object worker (AWS Batch)', () => {
+    const on = synth({ largeObjects: {} });
+    const GIB = 1024 ** 3;
+    const statementsOf = (template: Template, roleLogicalIdPrefix: string) =>
+      Object.entries(template.findResources('AWS::IAM::Policy', {}))
+        .filter(([id]) => id.startsWith(roleLogicalIdPrefix))
+        .flatMap(([, p]) => (p as { Properties: { PolicyDocument: { Statement: Record<string, unknown>[] } } }).Properties.PolicyDocument.Statement);
+    const actions = (s: Record<string, unknown>) => [s.Action].flat() as string[];
+
+    it('is off by default: no Batch resources, and the Lambda worker is not told to hand anything on', () => {
+      t.resourceCountIs('AWS::Batch::JobDefinition', 0);
+      t.resourceCountIs('AWS::Batch::JobQueue', 0);
+      t.resourceCountIs('AWS::Batch::ComputeEnvironment', 0);
+      const [worker] = Object.values(t.findResources('AWS::Lambda::Function', { Properties: { Timeout: 900 } }));
+      expect(Object.keys(worker!.Properties.Environment.Variables)).not.toEqual(expect.arrayContaining(['BATCH_JOB_QUEUE']));
+      expect(JSON.stringify(t.toJSON())).not.toContain('batch:SubmitJob');
+    });
+
+    it('runs jobs on Fargate in public subnets (no NAT), capped at 8 vCPUs unless told otherwise', () => {
+      on.hasResourceProperties('AWS::Batch::ComputeEnvironment', { Type: 'managed', ComputeResources: Match.objectLike({ Type: 'FARGATE', MaxvCpus: 8 }) });
+      expect(synth({ largeObjects: { maxVcpus: 16 } }).findResources('AWS::Batch::ComputeEnvironment')).toBeDefined();
+      synth({ largeObjects: { maxVcpus: 16 } }).hasResourceProperties('AWS::Batch::ComputeEnvironment', {
+        ComputeResources: Match.objectLike({ MaxvCpus: 16 }),
+      });
+      on.resourceCountIs('AWS::EC2::NatGateway', 0);
+    });
+
+    it('retries a failed job twice more, gives each attempt a day, and runs it on a public address (there is no NAT)', () => {
+      on.hasResourceProperties('AWS::Batch::JobDefinition', {
+        PlatformCapabilities: ['FARGATE'],
+        RetryStrategy: { Attempts: 3 },
+        Timeout: { AttemptDurationSeconds: 24 * 3600 },
+        ContainerProperties: Match.objectLike({
+          NetworkConfiguration: { AssignPublicIp: 'ENABLED' },
+          RuntimePlatform: { CpuArchitecture: 'X86_64', OperatingSystemFamily: 'LINUX' },
+        }),
+      });
+    });
+
+    it('sizes each attempt at two vCPUs and 4 GiB', () => {
+      const [def] = Object.values(on.findResources('AWS::Batch::JobDefinition'));
+      const sizes = Object.fromEntries(
+        (def!.Properties.ContainerProperties.ResourceRequirements as { Type: string; Value: string }[]).map((r) => [r.Type, r.Value]),
+      );
+      expect(sizes).toEqual({ VCPU: '2', MEMORY: '4096' });
+    });
+
+    it('tells the job how many attempts there are, so the last one marks the file failed (kept equal to the retry count)', () => {
+      const [def] = Object.values(on.findResources('AWS::Batch::JobDefinition'));
+      const env = Object.fromEntries((def!.Properties.ContainerProperties.Environment as { Name: string; Value: unknown }[]).map((e) => [e.Name, e.Value]));
+      expect(env.JOB_MAX_ATTEMPTS).toBe(String(def!.Properties.RetryStrategy.Attempts));
+      expect(Object.keys(env).sort()).toEqual(['BUCKET_NAME', 'JOB_MAX_ATTEMPTS', 'LEASE_MS', 'TABLE_NAME']);
+      // Held for longer than a job may run, but a retry releases a dead attempt's hold at once (see job.ts).
+      expect(Number(env.LEASE_MS)).toBeGreaterThan(24 * 3600_000);
+    });
+
+    it('tells the Lambda worker where to send objects over 40 GiB, or over the limit you set', () => {
+      on.hasResourceProperties('AWS::Lambda::Function', {
+        Environment: { Variables: { LARGE_OBJECT_BYTES: String(40 * GIB), BATCH_JOB_QUEUE: Match.anyValue(), BATCH_JOB_DEFINITION: Match.anyValue() } },
+      });
+      synth({ largeObjects: { thresholdBytes: 5 * GIB } }).hasResourceProperties('AWS::Lambda::Function', {
+        Environment: { Variables: { LARGE_OBJECT_BYTES: String(5 * GIB) } },
+      });
+    });
+
+    it('lets the Lambda worker start jobs in this queue and this definition, and nothing else on Batch', () => {
+      const submit = statementsOf(on, 'ProcessUploadFnServiceRoleDefaultPolicy').filter((s) => actions(s).some((a) => a.startsWith('batch:')));
+      expect(submit).toHaveLength(1);
+      expect(actions(submit[0]!)).toEqual(['batch:SubmitJob']);
+      expect([submit[0]!.Resource].flat()).toHaveLength(2);
+      expect(JSON.stringify(submit[0]!.Resource)).not.toBe('"*"');
+    });
+
+    it("gives the job exactly the Lambda worker's permissions: read uploads, write thumbnails, two DynamoDB actions", () => {
+      const job = statementsOf(on, 'LargeObjectJobRoleDefaultPolicy');
+      const worker = statementsOf(on, 'ProcessUploadFnServiceRoleDefaultPolicy').filter((s) => s.Sid);
+      const brief = (list: Record<string, unknown>[]) =>
+        list.filter((s) => s.Sid !== 'StartLargeObjectJobs').map((s) => ({ sid: s.Sid, actions: actions(s).sort() }));
+      expect(brief(job)).toEqual(brief(worker));
+      for (const s of job) expect(JSON.stringify(s.Resource)).not.toBe('"*"');
+    });
+
+    it('allows a wildcard only where ECR requires one: the token to pull the image', () => {
+      const exec = statementsOf(on, 'LargeObjectContainerExecutionRole');
+      const wildcards = exec.filter((s) => JSON.stringify(s.Resource) === '"*"');
+      expect(wildcards.map((s) => actions(s))).toEqual([['ecr:GetAuthorizationToken']]);
+    });
+
+    it('tells the alarm topic when a job fails on its last attempt', () => {
+      on.hasResourceProperties('AWS::Events::Rule', {
+        EventPattern: { source: ['aws.batch'], 'detail-type': ['Batch Job State Change'], detail: { status: ['FAILED'], jobQueue: [Match.anyValue()] } },
+        Targets: [Match.objectLike({ Arn: Match.anyValue() })],
+      });
+    });
+
+    it("graphs the job's metrics next to the Lambda worker's, under its own namespace", () => {
+      const [dashboard] = Object.values(on.findResources('AWS::CloudWatch::Dashboard'));
+      expect(JSON.stringify(dashboard!.Properties.DashboardBody)).toContain(LARGE_METRICS_NAMESPACE);
+      const [off] = Object.values(t.findResources('AWS::CloudWatch::Dashboard'));
+      expect(JSON.stringify(off!.Properties.DashboardBody)).not.toContain(LARGE_METRICS_NAMESPACE);
+      expect(LARGE_METRICS_NAMESPACE).toBe(WORKER_LARGE_NAMESPACE);
+    });
+
+    it('does not trip the Lambda worker slow-object alarm with the job: they publish to different namespaces', () => {
+      on.hasResourceProperties('AWS::CloudWatch::Alarm', { Namespace: METRICS_NAMESPACE, MetricName: 'ProcessingMs' });
+      expect(JSON.stringify(Object.values(on.findResources('AWS::CloudWatch::Alarm')))).not.toContain(LARGE_METRICS_NAMESPACE);
+    });
+
+    it('shares one VPC with the API when both are on', () => {
+      synth({ deployApi: true, largeObjects: {} }).resourceCountIs('AWS::EC2::VPC', 1);
+    });
+
+    it('is not available in LocalStack, and refuses limits that make no sense', () => {
+      expect(() => synth({ local: true, largeObjects: {} })).toThrow(/Batch.*LocalStack/);
+      expect(() => synth({ largeObjects: { thresholdBytes: 0 } })).toThrow(/thresholdBytes/);
+      expect(() => synth({ largeObjects: { thresholdBytes: 1.5 } })).toThrow(/thresholdBytes/);
+      expect(() => synth({ largeObjects: { maxVcpus: 1 } })).toThrow(/maxVcpus/);
     });
   });
 

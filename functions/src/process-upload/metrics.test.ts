@@ -1,4 +1,4 @@
-import { METRICS_NAMESPACE, metricsLine, type ObjectMetrics } from './metrics';
+import { LARGE_METRICS_NAMESPACE, METRICS_NAMESPACE, metricsLine, type ObjectMetrics } from './metrics';
 
 interface Emf {
   _aws: { Timestamp: number; CloudWatchMetrics: { Namespace: string; Dimensions: string[][]; Metrics: { Name: string; Unit: string }[] }[] };
@@ -38,5 +38,11 @@ describe('metricsLine (CloudWatch embedded metric format)', () => {
 
   it('keeps a whole-number timestamp in milliseconds, which is what CloudWatch requires', () => {
     expect(Number.isInteger(parse({ outcome: 'ignored', processingMs: 0 })._aws.Timestamp)).toBe(true);
+  });
+
+  it('can publish under another namespace, which the large-object job uses so its long runs stay out of the Lambda worker alarm', () => {
+    const line = JSON.parse(metricsLine({ outcome: 'processed', processingMs: 5 }, 1, LARGE_METRICS_NAMESPACE)) as Emf;
+    expect(line._aws.CloudWatchMetrics[0]!.Namespace).toBe('S3Upload/LargeWorker');
+    expect(LARGE_METRICS_NAMESPACE).not.toBe(METRICS_NAMESPACE);
   });
 });

@@ -24,3 +24,7 @@ updates:
     directory: /apps/api
     schedule:
       interval: weekly
+  - package-ecosystem: docker
+    directory: /functions/large-worker
+    schedule:
+      interval: weekly

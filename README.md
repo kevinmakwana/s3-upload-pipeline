@@ -34,6 +34,7 @@ flowchart LR
   SQS[["SQS queue"]]
   DLQ[["Dead-letter queue"]]
   L["Lambda worker<br/>checksum · sniff · thumbnail"]
+  BJ["Batch job (opt-in)<br/>objects over the Lambda limit"]
   DDB[("DynamoDB<br/>files + idempotency ledger")]
   FWD["Lambda forwarder<br/>stream → topic"]
   TOPIC(["SNS topic<br/>file changes"])
@@ -50,6 +51,8 @@ flowchart LR
   SQS -. "after 3 failed receives" .-> DLQ -.-> ALARM
   L --> S3
   L --> DDB
+  L -. "very large objects" .-> BJ --> S3
+  BJ --> DDB
   DDB -. "stream" .-> FWD --> TOPIC -. "one SQS queue per API task" .-> API
 ```
 
@@ -237,6 +240,7 @@ Everything below is optional and off by default. Each is a CDK context value, an
 | `-c deployWeb=true -c apiDomain=api.example.com` | The web app on S3 and CloudFront |
 | `-c malwareScan=true` | GuardDuty malware scanning of every upload, with quarantine |
 | `-c apiMaxTasks=N` | Ceiling for API autoscaling (default 4) |
+| `-c largeObjectWorker=true` | Process objects over `-c largeObjectBytes=` (default 40 GiB) in AWS Batch instead of Lambda; `-c largeObjectMaxVcpus=` caps how many run at once (default 8). See [Large objects](#large-objects) |
 
 Cognito, CloudFront and GuardDuty do not exist in LocalStack, so the stack refuses them with `-c local=true`.
 
@@ -348,6 +352,18 @@ The API writes one JSON object per line to stdout (the same shape as the worker'
 - **`FileChangesErrorsAlarm`** fires when the forwarder keeps failing. Live updates then slow to the safety interval; nothing is lost.
 - **LocalStack.** Adding the stream to a table LocalStack already created is not handled by its CloudFormation, so after upgrading run `npm run localstack:down`, then up and deploy again.
 
+### Large objects
+
+Lambda stops after 15 minutes, which is a limit on object size. With `-c largeObjectWorker=true` the stack adds an AWS Batch job (on Fargate), and the Lambda worker hands it any object declared larger than `-c largeObjectBytes=` (default 40 GiB). Raise `MAX_FILE_SIZE_BYTES` on the API to accept such files; it defaults to 20 GiB.
+
+- **Same code, no time limit.** The job runs the worker's own processing code and idempotency ledger (`functions/src/process-large`), so a file ends up in the same state whichever path took it. Objects at or under the threshold never leave Lambda.
+- **Retries.** Batch tries a failed job three times in all, with a day per attempt. A retry first releases whatever hold a killed attempt left, so it cannot mistake its predecessor for a live run. The last attempt marks the file `failed` with the reason, as the Lambda worker does on its last receive.
+- **A job that is killed outright** (out of memory, say) on its last attempt cannot mark the file, which then stays `processing`. An EventBridge rule sends a message to the alarm topic when a job fails for good; the job's log says why.
+- **Cost and limits.** Jobs run only while an object is being processed, 2 vCPUs and 4 GiB each, at most `-c largeObjectMaxVcpus=` vCPUs at once (default 8, so four jobs). Tasks sit in public subnets with no NAT gateway, like the API.
+- **Metrics** go to `S3Upload/LargeWorker` with the same names as the Lambda worker's, so a long job never trips `WorkerSlowObjectAlarm`. The dashboard has a row for them when the worker is on.
+- **Not in LocalStack,** which has no Batch. The job's code is covered by unit tests and by an integration test that runs it against LocalStack's S3 and DynamoDB, and the container image was run against LocalStack once by hand. What is untested is Batch itself: scheduling, retries and the failure message need a first real deploy to check.
+- **Roles.** The Lambda worker may start jobs only in this queue and this job definition. The job's role has exactly the worker's three permissions (read uploads, write thumbnails, two DynamoDB actions).
+
 ### Monitoring the worker
 
 Besides the log lines, the worker publishes metrics and X-Ray traces, with no extra permissions beyond sending trace data.
@@ -361,7 +377,7 @@ Besides the log lines, the worker publishes metrics and X-Ray traces, with no ex
 
 - **Why SHA-256, not Content-MD5?** WebCrypto has no MD5, and S3 supports SHA-256 per part natively, reporting it back through `ListParts`. That also makes resume verification exact: the browser compares its own hash with S3's.
 - **Why no custom resource for notifications?** CDK's default S3-to-SQS wiring uses a helper Lambda that LocalStack does not run. The stack sets the bucket's notification configuration directly, which needs a fixed bucket name to break a circular reference with the queue policy. The result deploys identically to LocalStack and AWS.
-- **Worker time limit.** Lambda stops at 15 minutes, and checksumming streams the whole object. At 100 to 250 MB/s that comfortably covers tens of gigabytes; for much larger files move the worker to Fargate or Batch.
+- **Worker time limit.** Lambda stops at 15 minutes, and checksumming streams the whole object. At 100 to 250 MB/s that comfortably covers tens of gigabytes, and the default 20 GiB file limit is far inside it. To accept much larger files, turn on the [large-object worker](#large-objects).
 - **Thumbnails** use pure-JS Jimp (no native binaries to bundle), so they cover PNG, JPEG and GIF up to 25 MB. Larger or other images are still checksummed, with the reason recorded.
 - **Live updates are pushed, with a timer as the safety net.** See [Live updates](#live-updates). Only the newest page is pushed; the web app merges each pushed page into the older pages the user has loaded with *Load older files*. Without the stack's topic (a bare `npm run dev` against your own table, say) the API polls DynamoDB instead.
 - **Resume UX differs by browser.** Persisting a file handle needs the File System Access API (Chromium). Elsewhere the upload session is still saved and you re-select the same file; the name and size must match.
@@ -372,7 +388,7 @@ Besides the log lines, the worker publishes metrics and X-Ray traces, with no ex
 ```
 apps/api         NestJS API: presign, ListParts, verified completion, live updates (SSE)
 apps/web         React + Vite UI: part map, lifecycle, IndexedDB resume
-functions/       Lambda worker (SQS → checksum, sniff, thumbnail, status) and the change forwarder (stream → SNS)
+functions/       Lambda worker (SQS → checksum, sniff, thumbnail, status), the change forwarder (stream → SNS) and the large-object Batch job
 infra/           AWS CDK app (TypeScript)
 packages/core    Part planning, validation, reconciliation, the upload engine
 packages/data    DynamoDB file store and idempotency ledger (+ in-memory twin)

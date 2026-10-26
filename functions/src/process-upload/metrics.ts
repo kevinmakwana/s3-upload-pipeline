@@ -5,9 +5,11 @@
  */
 
 export const METRICS_NAMESPACE = 'S3Upload/Worker';
+/** The large-object job publishes the same metrics here, so its long runs do not trip the Lambda worker's slow-object alarm. */
+export const LARGE_METRICS_NAMESPACE = 'S3Upload/LargeWorker';
 
 /** What happened to an object. A small, fixed set, because each value becomes its own metric series. */
-export type Outcome = 'processed' | 'rejected' | 'duplicate' | 'ignored' | 'error';
+export type Outcome = 'processed' | 'rejected' | 'duplicate' | 'ignored' | 'delegated' | 'error';
 
 export interface ObjectMetrics {
   outcome: Outcome;
@@ -28,7 +30,7 @@ export const stdoutMetrics: MetricSink = (line) => console.log(line);
  * Each metric is published twice: per outcome (to see rejected or failing files) and with no dimension (to alarm
  * on and graph the whole worker, e.g. the slowest object whatever its outcome).
  */
-export function metricsLine(m: ObjectMetrics, now: number): string {
+export function metricsLine(m: ObjectMetrics, now: number, namespace: string = METRICS_NAMESPACE): string {
   const metrics = [
     { Name: 'ObjectsHandled', Unit: 'Count' },
     { Name: 'ProcessingMs', Unit: 'Milliseconds' },
@@ -38,7 +40,7 @@ export function metricsLine(m: ObjectMetrics, now: number): string {
   return JSON.stringify({
     _aws: {
       Timestamp: now,
-      CloudWatchMetrics: [{ Namespace: METRICS_NAMESPACE, Dimensions: [['Outcome'], []], Metrics: metrics }],
+      CloudWatchMetrics: [{ Namespace: namespace, Dimensions: [['Outcome'], []], Metrics: metrics }],
     },
     Outcome: m.outcome,
     ObjectsHandled: 1,

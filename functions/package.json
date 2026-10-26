@@ -4,9 +4,11 @@
   "private": true,
   "description": "AWS Lambda handlers. process-upload consumes S3 ObjectCreated events from SQS.",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "esbuild src/process-large/main.ts --bundle --platform=node --target=node22 --format=cjs --outfile=dist/large-worker.js --sourcemap"
   },
   "dependencies": {
+    "@aws-sdk/client-batch": "^3.1153.0",
     "@aws-sdk/client-s3": "^3.1153.0",
     "@aws-sdk/client-sns": "^3.1153.0",
     "@s3up/core": "*",

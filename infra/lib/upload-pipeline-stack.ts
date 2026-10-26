@@ -1,5 +1,6 @@
 import * as path from 'node:path';
-import { Aws, CfnOutput, Duration, RemovalPolicy, Stack, Token, type StackProps } from 'aws-cdk-lib';
+import { Aws, CfnOutput, Duration, RemovalPolicy, Size, Stack, Token, type StackProps } from 'aws-cdk-lib';
+import * as batch from 'aws-cdk-lib/aws-batch';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
@@ -62,6 +63,15 @@ export interface UploadPipelineProps extends StackProps {
   alarmEmail?: string;
   /** Most API tasks autoscaling may run (default 4). The least is one. */
   apiMaxTasks?: number;
+  /**
+   * Process very large objects in an AWS Batch job (on Fargate) instead of the Lambda worker, which stops after 15
+   * minutes. Objects declared larger than `thresholdBytes` (default 40 GiB) go to the job. Not available in LocalStack.
+   */
+  largeObjects?: {
+    thresholdBytes?: number;
+    /** Most vCPUs Batch may run at once; each job uses 2 (default 8, so four jobs at a time). */
+    maxVcpus?: number;
+  };
 }
 
 /** Longest the worker may run. Checksumming a 15 GB object streams at roughly 100-300 MB/s. */
@@ -69,6 +79,12 @@ const WORKER_TIMEOUT = Duration.minutes(15);
 const MAX_RECEIVE_COUNT = 3;
 /** The embedded-metric namespace the worker publishes to (functions/src/process-upload/metrics.ts; a test keeps them equal). */
 export const WORKER_METRICS_NAMESPACE = 'S3Upload/Worker';
+/** The large-object job's metrics namespace (functions/src/process-upload/metrics.ts; a test keeps them equal). */
+export const LARGE_METRICS_NAMESPACE = 'S3Upload/LargeWorker';
+/** Batch tries a failed job this many times in all. The job marks the file failed on the last. */
+const LARGE_JOB_ATTEMPTS = 3;
+const LARGE_JOB_TIMEOUT = Duration.hours(24);
+const GIB = 1024 ** 3;
 /** An object that takes this share of the time limit is an early warning that bigger files will time out. */
 const WORKER_SLOW_SHARE = 0.8;
 const repoRoot = path.resolve(__dirname, '..', '..');
@@ -81,6 +97,19 @@ export class UploadPipelineStack extends Stack {
     if (local && (props.cognito || props.deployWeb || props.malwareScan)) {
       throw new Error('Cognito, CloudFront and GuardDuty malware scanning are not available in LocalStack; deploy these to AWS');
     }
+    if (local && props.largeObjects) throw new Error('The large-object worker runs on AWS Batch, which is not available in LocalStack; deploy it to AWS');
+    const largeThreshold = props.largeObjects?.thresholdBytes ?? 40 * GIB;
+    const largeMaxVcpus = props.largeObjects?.maxVcpus ?? 8;
+    if (props.largeObjects) {
+      if (!Number.isInteger(largeThreshold) || largeThreshold < 1)
+        throw new Error(`largeObjects.thresholdBytes must be a whole number of at least 1, got ${largeThreshold}`);
+      if (!Number.isInteger(largeMaxVcpus) || largeMaxVcpus < 2)
+        throw new Error(`largeObjects.maxVcpus must be a whole number of at least 2 (one job uses 2), got ${largeMaxVcpus}`);
+    }
+    // One VPC for everything that runs on Fargate, created the first time something needs it.
+    let sharedVpc: ec2.Vpc | undefined;
+    // No NAT gateway (about $32/month): tasks sit in public subnets, and nothing but the load balancer accepts traffic.
+    const vpcForFargate = () => (sharedVpc ??= new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 0 }));
     if (props.cognito && props.auth) throw new Error('Choose one: cognito creates the API auth settings, so do not also pass jwt or demo auth');
     if (props.deployWeb) {
       if (!props.apiDomain) throw new Error('deployWeb needs apiDomain (-c apiDomain=api.example.com): the page is HTTPS, so it can only call an HTTPS API');
@@ -194,6 +223,57 @@ export class UploadPipelineStack extends Stack {
     // S3 validates the queue's policy when the notification is saved, so the policy must exist first.
     if (enqueuePolicy.policyDependable) cfnBucket.node.addDependency(enqueuePolicy.policyDependable);
 
+    // What processing an object takes, for the Lambda worker and the large-object job alike: read uploads, write
+    // thumbnails, and touch two DynamoDB actions.
+    const processingStatements = () => [
+      new iam.PolicyStatement({ sid: 'ReadUploadedObjects', actions: ['s3:GetObject', 's3:GetObjectVersion'], resources: [bucket.arnForObjects('uploads/*')] }),
+      new iam.PolicyStatement({ sid: 'WriteThumbnails', actions: ['s3:PutObject'], resources: [bucket.arnForObjects('thumbnails/*')] }),
+      new iam.PolicyStatement({ sid: 'FileRecordsAndLedger', actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'], resources: [table.tableArn] }),
+    ];
+
+    // ------------------------------------------------------ large objects (opt-in)
+    // The Lambda worker stops at 15 minutes, which is a limit on object size. Past a threshold it hands the object
+    // to an AWS Batch job instead: the same code and ledger, but with no time limit, retries, and a cap on how many
+    // run at once. Batch has no LocalStack support, so this is AWS only.
+    let large: { queue: batch.JobQueue; definition: batch.EcsJobDefinition } | undefined;
+    if (props.largeObjects) {
+      const computeEnvironment = new batch.FargateComputeEnvironment(this, 'LargeObjectCompute', {
+        vpc: vpcForFargate(),
+        vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+        maxvCpus: largeMaxVcpus,
+      });
+      const queue = new batch.JobQueue(this, 'LargeObjectQueue', { priority: 1, computeEnvironments: [{ computeEnvironment, order: 1 }] });
+      const jobRole = new iam.Role(this, 'LargeObjectJobRole', { assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com') });
+      processingStatements().forEach((statement) => jobRole.addToPolicy(statement));
+      const definition = new batch.EcsJobDefinition(this, 'LargeObjectJob', {
+        retryAttempts: LARGE_JOB_ATTEMPTS,
+        timeout: LARGE_JOB_TIMEOUT,
+        container: new batch.EcsFargateContainerDefinition(this, 'LargeObjectContainer', {
+          image: ecs.ContainerImage.fromAsset(repoRoot, { file: 'functions/large-worker/Dockerfile', platform: ecr_assets.Platform.LINUX_AMD64 }),
+          // Checksumming streams, so memory stays small; two vCPUs keep up with the network.
+          cpu: 2,
+          memory: Size.gibibytes(4),
+          fargateCpuArchitecture: ecs.CpuArchitecture.X86_64,
+          fargateOperatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+          // Public subnets, no NAT: the task reaches S3, DynamoDB and the registry directly.
+          assignPublicIp: true,
+          jobRole,
+          environment: {
+            TABLE_NAME: table.tableName,
+            BUCKET_NAME: bucket.bucketName,
+            JOB_MAX_ATTEMPTS: String(LARGE_JOB_ATTEMPTS),
+            // Held until the job could not still be running; a retry releases a dead attempt's lease at once.
+            LEASE_MS: String(LARGE_JOB_TIMEOUT.toMilliseconds() + 60_000),
+          },
+          logging: ecs.LogDrivers.awsLogs({
+            streamPrefix: 'large-object',
+            logGroup: new logs.LogGroup(this, 'LargeObjectLogs', { retention: logs.RetentionDays.ONE_MONTH, removalPolicy: RemovalPolicy.DESTROY }),
+          }),
+        }),
+      });
+      large = { queue, definition };
+    }
+
     const worker = new NodejsFunction(this, 'ProcessUploadFn', {
       entry: path.join(repoRoot, 'functions', 'src', 'process-upload', 'handler.ts'),
       handler: 'handler',
@@ -211,6 +291,9 @@ export class UploadPipelineStack extends Stack {
         BUCKET_NAME: bucket.bucketName,
         MAX_RECEIVE_COUNT: String(MAX_RECEIVE_COUNT),
         LEASE_MS: String(WORKER_TIMEOUT.toMilliseconds() + 60_000),
+        ...(large
+          ? { LARGE_OBJECT_BYTES: String(largeThreshold), BATCH_JOB_QUEUE: large.queue.jobQueueArn, BATCH_JOB_DEFINITION: large.definition.jobDefinitionArn }
+          : {}),
         // Lambda containers inside LocalStack reach S3 as plain "localstack": path-style needed.
         ...(local ? { S3_FORCE_PATH_STYLE: 'true' } : {}),
       },
@@ -224,28 +307,18 @@ export class UploadPipelineStack extends Stack {
     });
     worker.addEventSource(new SqsEventSource(queue, { batchSize: 1, reportBatchItemFailures: true, maxConcurrency: 5 }));
 
-    // Least privilege for the worker: read uploads, write thumbnails, touch two DynamoDB actions.
-    worker.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'ReadUploadedObjects',
-        actions: ['s3:GetObject', 's3:GetObjectVersion'],
-        resources: [bucket.arnForObjects('uploads/*')],
-      }),
-    );
-    worker.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'WriteThumbnails',
-        actions: ['s3:PutObject'],
-        resources: [bucket.arnForObjects('thumbnails/*')],
-      }),
-    );
-    worker.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: 'FileRecordsAndLedger',
-        actions: ['dynamodb:GetItem', 'dynamodb:UpdateItem'],
-        resources: [table.tableArn],
-      }),
-    );
+    // Least privilege for the worker (see processingStatements), plus starting jobs in the one queue and definition.
+    processingStatements().forEach((statement) => worker.addToRolePolicy(statement));
+    if (large) {
+      worker.addToRolePolicy(
+        new iam.PolicyStatement({
+          sid: 'StartLargeObjectJobs',
+          actions: ['batch:SubmitJob'],
+          // Batch authorises a submission against both the queue and the exact job definition revision.
+          resources: [large.queue.jobQueueArn, large.definition.jobDefinitionArn],
+        }),
+      );
+    }
 
     // ----------------------------------------------------------------- alarms
     const alarmTopic = new sns.Topic(this, 'AlarmTopic', { enforceSSL: true });
@@ -342,6 +415,40 @@ export class UploadPipelineStack extends Stack {
         left: [dlq.metricApproximateNumberOfMessagesVisible({ period: Duration.minutes(1), statistic: 'Maximum', label: 'messages' })],
       }),
     );
+
+    if (large) {
+      // Batch retries a failed job, and reports FAILED only once it has none left. The job marks the file failed itself,
+      // unless it was killed outright (out of memory, say), when the file stays "processing": tell a person.
+      new events.Rule(this, 'LargeObjectJobFailedRule', {
+        description: 'A large-object job failed on its last attempt.',
+        eventPattern: { source: ['aws.batch'], detailType: ['Batch Job State Change'], detail: { status: ['FAILED'], jobQueue: [large.queue.jobQueueArn] } },
+        targets: [
+          new targets.SnsTopic(alarmTopic, {
+            message: events.RuleTargetInput.fromText(
+              `A large-object job failed after its last attempt: ${events.EventField.fromPath('$.detail.jobName')} (${events.EventField.fromPath('$.detail.statusReason')}). ` +
+                `The file may still show as processing; the job's log says why.`,
+            ),
+          }),
+        ],
+      });
+      const largeMetric = (metricName: string, statistic: string, dimensionsMap?: Record<string, string>) =>
+        new cloudwatch.Metric({ namespace: LARGE_METRICS_NAMESPACE, metricName, statistic, period: Duration.minutes(5), dimensionsMap });
+      dashboard.addWidgets(
+        new cloudwatch.GraphWidget({
+          title: 'Large objects handled (Batch)',
+          stacked: true,
+          width: 12,
+          left: (['processed', 'rejected', 'duplicate', 'error'] as const).map((outcome) =>
+            largeMetric('ObjectsHandled', 'Sum', { Outcome: outcome }).with({ label: outcome }),
+          ),
+        }),
+        new cloudwatch.GraphWidget({
+          title: 'Time per large object (ms)',
+          width: 12,
+          left: [largeMetric('ProcessingMs', 'p50').with({ label: 'median' }), largeMetric('ProcessingMs', 'Maximum').with({ label: 'slowest' })],
+        }),
+      );
+    }
 
     // ---------------------------------------------------- change notifications
     // The live file list used to poll DynamoDB once a second for every open connection. Instead, a change to a file
@@ -474,8 +581,7 @@ export class UploadPipelineStack extends Stack {
       const authEnvironment = apiAuthEnvironment(auth);
       const apiMaxTasks = props.apiMaxTasks ?? 4;
       if (!Number.isInteger(apiMaxTasks) || apiMaxTasks < 1) throw new Error(`apiMaxTasks must be a whole number of at least 1, got ${apiMaxTasks}`);
-      // No NAT gateway (≈$32/month): tasks sit in public subnets and only the ALB accepts traffic.
-      const vpc = new ec2.Vpc(this, 'Vpc', { maxAzs: 2, natGateways: 0 });
+      const vpc = vpcForFargate();
       const certificate = props.certificateArn ? acm.Certificate.fromCertificateArn(this, 'ApiCertificate', props.certificateArn) : undefined;
       const service = new ecsPatterns.ApplicationLoadBalancedFargateService(this, 'Api', {
         vpc,
@@ -537,6 +643,10 @@ export class UploadPipelineStack extends Stack {
     new CfnOutput(this, 'AlarmTopicArn', { value: alarmTopic.topicArn });
     new CfnOutput(this, 'ChangesTopicArn', { value: changesTopic.topicArn });
     new CfnOutput(this, 'ChangesQueuePrefix', { value: changeQueuePrefix });
+    if (large) {
+      new CfnOutput(this, 'LargeObjectJobQueueArn', { value: large.queue.jobQueueArn });
+      new CfnOutput(this, 'LargeObjectJobDefinitionArn', { value: large.definition.jobDefinitionArn });
+    }
   }
 
   /**
