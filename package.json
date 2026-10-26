@@ -37,9 +37,9 @@
     "test:e2e": "playwright test -c e2e/playwright.config.ts"
   },
   "devDependencies": {
-    "@aws-sdk/client-iam": "^3.1153.0",
-    "@aws-sdk/client-sqs": "^3.1153.0",
-    "@aws-sdk/client-sts": "^3.1153.0",
+    "@aws-sdk/client-iam": "^3.1156.0",
+    "@aws-sdk/client-sqs": "^3.1156.0",
+    "@aws-sdk/client-sts": "^3.1156.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.1",
     "@types/jest": "^30.0.0",

@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-batch": "^3.1153.0",
-    "@aws-sdk/client-s3": "^3.1153.0",
+    "@aws-sdk/client-s3": "^3.1156.0",
     "@aws-sdk/client-sns": "^3.1153.0",
     "@s3up/core": "*",
     "@s3up/data": "*",
