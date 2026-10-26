@@ -1,40 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { Readable } from 'node:stream';
 import { Jimp } from 'jimp';
 import { MemoryFileStore, MemoryLedger, type FileRecord } from '@s3up/data';
 import { newRecord } from '../../../packages/data/src/testing/contract';
-import { ProcessingInProgressError, idempotencyKey, processObject, type ObjectStorage, type ProcessorDeps } from './processor';
+import { FakeStorage } from '../testing/fake-storage';
+import { ProcessingInProgressError, idempotencyKey, processObject, type ProcessorDeps } from './processor';
 import { handleBatch } from './handler';
 import type { SQSEvent } from 'aws-lambda';
-
-class FakeStorage implements ObjectStorage {
-  objects = new Map<string, Buffer>();
-  thumbnails = new Map<string, Buffer>();
-  streamCalls = 0;
-  failStream = 0;
-  async head(key: string) {
-    const o = this.objects.get(key);
-    if (!o) throw new Error('NoSuchKey');
-    return { size: o.length };
-  }
-  async readHead(key: string, _v: string | undefined, length: number) {
-    return this.objects.get(key)!.subarray(0, length);
-  }
-  async stream(key: string) {
-    this.streamCalls++;
-    if (this.failStream > 0) {
-      this.failStream--;
-      throw new Error('connection reset');
-    }
-    return Readable.from([this.objects.get(key)!]);
-  }
-  async readAll(key: string) {
-    return this.objects.get(key)!;
-  }
-  async putThumbnail(key: string, body: Buffer) {
-    this.thumbnails.set(key, body);
-  }
-}
 
 function setup() {
   const files = new MemoryFileStore();
@@ -214,6 +185,62 @@ describe('processObject', () => {
   });
 });
 
+describe('processObject: objects too big for this worker', () => {
+  const delegating = (aboveBytes: number) => {
+    const ctx = setup();
+    const submitted: { key: string; versionId?: string; fileId: string }[] = [];
+    ctx.deps.delegate = { aboveBytes, submit: async (ref, file) => void submitted.push({ key: ref.key, versionId: ref.versionId, fileId: file.id }) };
+    return { ...ctx, submitted };
+  };
+
+  it('hands an object declared larger than the limit to the delegate, and touches nothing itself', async () => {
+    const { deps, files, ledger, storage, addFile, submitted } = delegating(10);
+    const rec = await addFile(Buffer.alloc(11, 1));
+    const out = await processObject(deps, { key: rec.s3Key, versionId: 'v1' });
+
+    expect(out).toEqual({ type: 'delegated' });
+    expect(submitted).toEqual([{ key: rec.s3Key, versionId: 'v1', fileId: rec.id }]);
+    expect(storage.streamCalls).toBe(0);
+    expect((await files.get(rec.id))!.status).toBe('uploaded'); // the job marks it processing when it starts
+    expect((await ledger.begin(idempotencyKey({ key: rec.s3Key, versionId: 'v1' }), new Date(), 1000)).outcome).toBe('acquired'); // no lease was taken
+  });
+
+  it('processes an object at or under the limit in place', async () => {
+    const { deps, files, addFile, submitted } = delegating(10);
+    const rec = await addFile(Buffer.alloc(10, 1));
+    const out = await processObject(deps, { key: rec.s3Key, versionId: 'v1' });
+    expect(out.type).toBe('processed');
+    expect(submitted).toEqual([]);
+    expect((await files.get(rec.id))!.status).toBe('ready');
+  });
+
+  it('processes everything in place when nothing is configured to take the big ones', async () => {
+    const { deps, addFile } = setup();
+    const rec = await addFile(Buffer.alloc(5_000, 1));
+    expect((await processObject(deps, { key: rec.s3Key, versionId: 'v1' })).type).toBe('processed');
+  });
+
+  it('still ignores records it would have ignored, rather than starting a job for them', async () => {
+    const { deps, addFile, submitted } = delegating(0);
+    const aborted = await addFile(Buffer.alloc(5, 1), { status: 'aborted' });
+    const quarantined = await addFile(Buffer.alloc(5, 1), { status: 'quarantined' });
+    expect((await processObject(deps, { key: aborted.s3Key })).type).toBe('ignored');
+    expect((await processObject(deps, { key: quarantined.s3Key })).type).toBe('ignored');
+    expect((await processObject(deps, { key: 'somewhere/else' })).type).toBe('ignored');
+    expect(submitted).toEqual([]);
+  });
+
+  it('fails, so the message is retried, when the job cannot be started, and leaves the file as it was', async () => {
+    const { deps, files, addFile } = delegating(0);
+    deps.delegate!.submit = async () => {
+      throw new Error('ThrottlingException');
+    };
+    const rec = await addFile(Buffer.alloc(5, 1));
+    await expect(processObject(deps, { key: rec.s3Key, versionId: 'v1' }, 3)).rejects.toThrow('ThrottlingException');
+    expect((await files.get(rec.id))!.status).toBe('uploaded'); // not failed: the queue's own retries and DLQ take it from here
+  });
+});
+
 describe('handleBatch (SQS partial batch response)', () => {
   const s3Body = (key: string, versionId = 'v1', eventName = 'ObjectCreated:CompleteMultipartUpload') =>
     JSON.stringify({ Records: [{ eventName, s3: { object: { key: encodeURIComponent(key).replace(/%20/g, '+'), versionId, eTag: 'e' } } }] });
@@ -301,6 +328,17 @@ describe('handleBatch (SQS partial batch response)', () => {
       const out: string[] = [];
       await handleBatch({ Records: [withSent(message('m', s3Body(rec.s3Key), '2'), 90_000)] }, deps, (l) => out.push(l));
       expect(lines(out)[0]).not.toHaveProperty('QueueLatencyMs');
+    });
+
+    it('reports an object handed to the large-object worker as delegated', async () => {
+      const { deps, addFile } = setup();
+      at(deps);
+      deps.delegate = { aboveBytes: 1, submit: async () => undefined };
+      const rec = await addFile(Buffer.from('abc'));
+      const out: string[] = [];
+      await handleBatch({ Records: [message('m', s3Body(rec.s3Key))] }, deps, (l) => out.push(l));
+      expect(lines(out)).toEqual([expect.objectContaining({ Outcome: 'delegated' })]);
+      expect(lines(out)[0]).not.toHaveProperty('BytesProcessed');
     });
 
     it('says nothing about messages that carry no object', async () => {

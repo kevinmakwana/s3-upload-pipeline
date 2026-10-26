@@ -25,11 +25,21 @@ export interface ProcessorConfig {
   maxReceiveCount: number;
 }
 
+/** Somewhere that can take longer than this worker may, for objects too big to checksum within its time limit. */
+export interface LargeObjectDelegate {
+  /** Objects declared larger than this go to `submit` instead of being processed here. */
+  aboveBytes: number;
+  /** Starts the work elsewhere and returns once it is accepted. A failure propagates, so the message is retried. */
+  submit(ref: ObjectRef, file: FileRecord): Promise<void>;
+}
+
 export interface ProcessorDeps {
   files: FileStore;
   ledger: ProcessingLedger;
   storage: ObjectStorage;
   config: ProcessorConfig;
+  /** Absent where the object must be processed in place (the large-object job itself, and stacks without one). */
+  delegate?: LargeObjectDelegate;
   now?: () => Date;
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
@@ -41,7 +51,12 @@ export interface ObjectRef {
 }
 
 export type ProcessOutcome =
-  { type: 'processed'; result: ProcessingResult } | { type: 'rejected'; reason: string } | { type: 'duplicate' } | { type: 'ignored'; reason: string };
+  | { type: 'processed'; result: ProcessingResult }
+  | { type: 'rejected'; reason: string }
+  | { type: 'duplicate' }
+  | { type: 'ignored'; reason: string }
+  /** Handed to the large-object worker, which will process it. */
+  | { type: 'delegated' };
 
 /** Another invocation is working on this object right now; retry later. */
 export class ProcessingInProgressError extends Error {
@@ -74,6 +89,14 @@ export async function processObject(deps: ProcessorDeps, ref: ObjectRef, receive
   }
   if (file.status === 'aborted') return { type: 'ignored', reason: 'upload was aborted' };
   if (file.status === 'quarantined') return { type: 'ignored', reason: 'file was quarantined' };
+
+  // Too big for this worker's time limit. Nothing is leased or marked first: the job does both when it starts, and a
+  // repeated message just starts a second job, which finds the lease taken or the work done and stops.
+  if (deps.delegate && file.size > deps.delegate.aboveBytes) {
+    await deps.delegate.submit(ref, file);
+    log('delegated to the large-object worker', { key: ref.key, size: file.size });
+    return { type: 'delegated' };
+  }
 
   const idemKey = idempotencyKey(ref);
   const lease = await ledger.begin(idemKey, now(), config.leaseMs);

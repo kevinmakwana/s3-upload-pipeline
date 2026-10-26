@@ -1,9 +1,8 @@
 import type { S3Event, S3EventRecord, SQSBatchResponse, SQSEvent, SQSRecord } from 'aws-lambda';
-import { createDocClient, createS3Client, DynamoFileStore, DynamoProcessingLedger } from '@s3up/data';
-import { MiB } from '@s3up/core';
+import { delegateFromEnv } from './batch-delegate';
+import { processorDepsFromEnv } from './deps';
 import { metricsLine, noMetrics, stdoutMetrics, type MetricSink, type Outcome } from './metrics';
 import { processObject, type ProcessorDeps } from './processor';
-import { S3ObjectStorage } from './s3-storage';
 
 /** `traceId` ties a log line to its X-Ray trace; Lambda sets the variable afresh for each invocation. */
 const log = (message: string, fields: Record<string, unknown> = {}) =>
@@ -13,27 +12,8 @@ let cached: ProcessorDeps | undefined;
 
 /** Built lazily so importing the module (e.g. in tests) needs no AWS configuration. */
 function defaultDeps(): ProcessorDeps {
-  if (cached) return cached;
-  const table = requiredEnv('TABLE_NAME');
-  const doc = createDocClient();
-  cached = {
-    files: new DynamoFileStore(doc, table),
-    ledger: new DynamoProcessingLedger(doc, table),
-    storage: new S3ObjectStorage(createS3Client(), requiredEnv('BUCKET_NAME')),
-    config: {
-      thumbnailMaxBytes: Number(process.env.THUMBNAIL_MAX_BYTES ?? 25 * MiB),
-      leaseMs: Number(process.env.LEASE_MS ?? 16 * 60_000),
-      maxReceiveCount: Number(process.env.MAX_RECEIVE_COUNT ?? 3),
-    },
-    log,
-  };
+  cached ??= processorDepsFromEnv(process.env, log, { delegate: delegateFromEnv(process.env) });
   return cached;
-}
-
-function requiredEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing environment variable ${name}`);
-  return v;
 }
 
 /** S3 event keys are URL-encoded, with spaces as "+". */

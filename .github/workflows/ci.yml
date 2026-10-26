@@ -33,13 +33,17 @@ jobs:
         run: npm run typecheck
       - name: Unit tests
         run: npm test
-      - name: Build (API bundle + web app)
+      - name: Build (API bundle, large-object worker bundle, web app)
         run: npm run build
+      - name: Build the container images (they are otherwise built only at deploy time)
+        run: |
+          docker build -f apps/api/Dockerfile -t s3up-api:ci .
+          docker build -f functions/large-worker/Dockerfile -t s3up-large-worker:ci .
       - name: cdk synth (LocalStack-compatible stack)
         run: npm run synth
       - name: cdk synth (with the Fargate API)
         run: npm run synth:api
-      - name: cdk synth (API, Cognito and the CloudFront-hosted web app)
+      - name: cdk synth (API, Cognito, CloudFront web app, malware scan and the large-object worker)
         run: npm run synth:full
 
   integration:
